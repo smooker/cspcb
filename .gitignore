@@ -22,7 +22,6 @@ firmware/Middlewares/
 
 # Firmware — generated/downloaded files
 firmware/defines.h
-firmware/STM32F411.svd
 
 # Firmware — docs (PDFs, schematics, datasheets)
 firmware/docs/
