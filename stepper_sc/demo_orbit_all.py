@@ -17,8 +17,8 @@ from kipy.geometry import Vector2, Angle
 SOCKET = 'ipc:///home/claude-agent/tmp/kicad/api.sock'
 
 RADIUS  = 3.0    # mm — orbit radius per footprint
-STEPS   = 360    # steps per full revolution
-DELAY   = 0.01   # seconds per step → ~3.6s per orbit
+STEPS   = 720    # steps per full revolution (0.5°/step)
+DELAY   = 0.001  # seconds per step → ~0.72s per orbit
 
 
 def main():
@@ -54,8 +54,6 @@ def main():
     step = 0
     try:
         while True:
-            commit = board.begin_commit()
-
             for i, (fp, ref, cx, cy, orig_rot) in enumerate(homes):
                 # Phase spreads footprints evenly around the clock
                 phase = 2 * math.pi * i / n
@@ -67,8 +65,8 @@ def main():
 
                 fp.position    = Vector2.from_xy_mm(x, y)
                 fp.orientation = Angle.from_degrees(spin)
+                board.update_items(fp)
 
-            board.push_commit(commit, 'orbit_all')
             k.run_action('view.redraw')
 
             sys.stdout.write(f'\r  step {step:4d}/{STEPS}  ')
@@ -79,11 +77,10 @@ def main():
 
     except KeyboardInterrupt:
         print('\n\nRestoring all footprints...')
-        commit = board.begin_commit()
         for fp, ref, cx, cy, orig_rot in homes:
             fp.position    = Vector2.from_xy_mm(cx, cy)
             fp.orientation = orig_rot
-        board.push_commit(commit, 'orbit_all: restore')
+            board.update_items(fp)
         k.run_action('view.redraw')
         k.run_action('pcbnew.ZoomFitScreen')
         print(f'All {n} footprints restored.')
