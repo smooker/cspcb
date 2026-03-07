@@ -1,0 +1,34 @@
+# Python
+venv
+venv/
+__pycache__/
+*.pyc
+
+# KiCad symbol libraries (machine-specific symlink)
+kicad_sym
+kicad_sym/
+
+# KiCad lock and backup files
+*.lck
+*-backups/
+*.bak
+
+# Generated schematic (canonical copy is in stepper_sc/)
+howto_sch_and_then_api/stepper_sc.kicad_sch
+
+# Firmware — ST HAL (57MB, get from STM32CubeMX or ST website)
+firmware/Drivers/
+firmware/Middlewares/
+
+# Firmware — generated/downloaded files
+firmware/defines.h
+firmware/STM32F411.svd
+
+# Firmware — docs (PDFs, schematics, datasheets)
+firmware/docs/
+
+# GDB helper — clone separately: https://github.com/bnahill/PyCortexMDebug
+firmware/PyCortexMDebug/
+
+# Build output
+firmware/build/
