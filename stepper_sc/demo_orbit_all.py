@@ -17,8 +17,8 @@ from kipy.geometry import Vector2, Angle
 SOCKET = 'ipc:///home/claude-agent/tmp/kicad/api.sock'
 
 RADIUS  = 3.0    # mm — orbit radius per footprint
-STEPS   = 120    # steps per full revolution
-DELAY   = 0.04   # seconds per step → ~5s per orbit
+STEPS   = 360    # steps per full revolution
+DELAY   = 0.01   # seconds per step → ~3.6s per orbit
 
 
 def main():
@@ -67,7 +67,6 @@ def main():
 
                 fp.position    = Vector2.from_xy_mm(x, y)
                 fp.orientation = Angle.from_degrees(spin)
-                board.update_items(fp)
 
             board.push_commit(commit, 'orbit_all')
             k.run_action('view.redraw')
@@ -84,7 +83,6 @@ def main():
         for fp, ref, cx, cy, orig_rot in homes:
             fp.position    = Vector2.from_xy_mm(cx, cy)
             fp.orientation = orig_rot
-            board.update_items(fp)
         board.push_commit(commit, 'orbit_all: restore')
         k.run_action('view.redraw')
         k.run_action('pcbnew.ZoomFitScreen')

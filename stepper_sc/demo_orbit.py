@@ -50,7 +50,6 @@ def main():
             commit = board.begin_commit()
             fp.position = Vector2.from_xy_mm(x, y)
             fp.orientation = Angle.from_degrees(rot)
-            board.update_items(fp)
             board.push_commit(commit, 'orbit')
             k.run_action('view.redraw')
 
