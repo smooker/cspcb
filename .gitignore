@@ -26,8 +26,6 @@ firmware/defines.h
 # Firmware — docs (PDFs, schematics, datasheets)
 firmware/docs/
 
-# GDB helper — clone separately: https://github.com/bnahill/PyCortexMDebug
-firmware/PyCortexMDebug/
 
 # Build output
 firmware/build/

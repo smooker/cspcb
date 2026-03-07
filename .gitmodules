@@ -1,0 +1,3 @@
+[submodule "firmware/PyCortexMDebug"]
+	path = firmware/PyCortexMDebug
+	url = https://github.com/bnahill/PyCortexMDebug.git
