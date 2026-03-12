@@ -143,7 +143,7 @@ C_INCLUDES =  \
 # compile gcc flags
 ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Werror -Wall -Wextra -fdata-sections -ffunction-sections
 
-CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -dM -Werror -Wall -Wextra -fdata-sections -ffunction-sections -include Core/Inc/defines.h
+CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -dM -Werror -Wall -Wextra -Wno-error=unused-parameter -fdata-sections -ffunction-sections -include Core/Inc/defines.h
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g3 -gdwarf-2
