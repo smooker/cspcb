@@ -1,4 +1,7 @@
 set remote exec-file ./build/stepper.elf
+set max-value-size unlimited
+source ./PyCortexMDebug/scripts/gdb.py
+svd_load ./STM32F411.svd
 
 define ld
 file ./build/stepper.elf
