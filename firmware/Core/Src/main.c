@@ -166,6 +166,7 @@ static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void ProcessEvents(void);
+void RunCombo(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -678,6 +679,7 @@ void ProcessLine(void)
             diagMode = !diagMode;
             printf("diag mode %s\r\n", diagMode ? "ON" : "OFF");
         }
+        else if (strcmp(cmd, "combo")  == 0) RunCombo();
         else if (strcmp(cmd, "help")   == 0)
             printf("commands:\r\n"
                       "  move <mm>          move by mm\r\n"
@@ -691,7 +693,12 @@ void ProcessLine(void)
                       "  set jogmm    <f>   jog distance mm\r\n"
                       "  set stepmm   <f>   step distance mm\r\n"
                       "  set spmm     <n>   steps per mm\r\n"
-                      "  params, save, dump, stop, diag, cls, uptime, reset\r\n");
+                      "  params, save, dump, stop, diag, cls, uptime, reset\r\n"
+                      "buttons:\r\n"
+                      "  JOGL/R short       Jog(jogmm) with ramps\r\n"
+                      "  JOGL/R hold>300ms  RunContinuous(mmpsmax) until release/endstop\r\n"
+                      "  STEPL/R            Move(stepmm) with ramps\r\n"
+                      "  ES_L/R             emergency stop (immediate decel)\r\n");
         else
             printf(" unknown: %s\r\n", cmd);
     }
@@ -1159,6 +1166,31 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     default:
         break;
     }
+}
+
+/* Combo test: 4 moves with wait between each */
+void RunCombo(void)
+{
+    printf("combo: triangle L\r\n");
+    Stepper_Move(-1.0f);
+    while (Stepper_IsBusy()) { HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin); HAL_Delay(100); }
+    HAL_Delay(500);
+
+    printf("combo: triangle R\r\n");
+    Stepper_Move(1.0f);
+    while (Stepper_IsBusy()) { HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin); HAL_Delay(100); }
+    HAL_Delay(500);
+
+    printf("combo: trapezoid L\r\n");
+    Stepper_Move(-5.0f);
+    while (Stepper_IsBusy()) { HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin); HAL_Delay(100); }
+    HAL_Delay(500);
+
+    printf("combo: trapezoid R\r\n");
+    Stepper_Move(5.0f);
+    while (Stepper_IsBusy()) { HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin); HAL_Delay(100); }
+
+    printf("combo done\r\n");
 }
 
 /* Called from main loop — safe to printf here */

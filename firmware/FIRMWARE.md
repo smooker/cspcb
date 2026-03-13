@@ -40,6 +40,7 @@ State machine: IDLE → ACCEL → CONST → DECEL → IDLE
 | cls                  | Clear terminal screen              |
 | uptime               | Print HAL_GetTick() ms             |
 | reset                | Software reset (NVIC_SystemReset)  |
+| combo                | Run 4 test moves (2 tri + 2 trap) |
 | help                 | Print command list                 |
 
 Terminal escape sequences supported (arrow keys, F1-F4).
@@ -211,6 +212,19 @@ Fix: `decelIndex = decelSize - 1` (fast end), smooth symmetric decel.
 
 Accel/decel are symmetric (371 vs 370 steps).
 
+### Asymmetric decel (dvdtacc=50, dvdtdecc=100)
+
+`combo` command captures all 4 ramp profiles in one shot:
+
+| # | Command | Pulses | Duration | Shape | Direction |
+|---|---------|--------|----------|-------|-----------|
+| 1 | movel 1 | 400 | 199ms | triangle | L |
+| 2 | mover 1 | 400 | 199ms | triangle | R |
+| 3 | movel 5 | 2000 | 594ms | trapezoid | L |
+| 4 | mover 5 | 2000 | 594ms | trapezoid | R |
+
+Decel ramp is 2× steeper than accel (visible in speed trace).
+
 ### Capture files
 
 | File | Contents |
@@ -218,18 +232,24 @@ Accel/decel are symmetric (371 vs 370 steps).
 | `capture_all.sr` | Pre-fix, 1 MHz, `move 10`, shows decel bug |
 | `capture_both.sr` | Post-fix, 100 kHz, `mover 5` + `movel 5`, both directions |
 | `capture_both_speed.sr` | Same + computed speed analog channel (mm/s) |
-| `capture_both.pvs` | Pulseview session: edge counter + stepper_motor decoders |
-| `capture_both_speed.pvs` | Same + analog speed trace, 64px traces |
+| `capture_combo_final_speed.sr` | Combo: 2 triangles + 2 trapezoids, asymmetric decel |
+| `capture_combo_final_speed.pvs` | Session with decoders + speed trace |
 
 ### Viewing
 
 ```bash
 cd firmware
-./go.sh view                        # open capture_both_speed.sr in pulseview
-./go.sh speed ../capture_both.sr    # generate speed channel + view
+./go.sh view ../capture_combo_final_speed.sr   # open combo capture
+./go.sh speed ../capture_both.sr               # generate speed channel + view
 ```
 
-![Pulseview capture](../docs/media/pulseview_capture.png)
+![Combo capture: 2 triangles + 2 trapezoids](../docs/media/pulseview_combo4.png)
+
+### `combo` command
+
+Built-in test command that executes 4 moves sequentially (waits for each to finish):
+`movel 1` → `mover 1` → `movel 5` → `mover 5` with 500ms gaps.
+Useful for single-shot capture of all ramp profiles via GDB inject + sigrok.
 
 ## Intercommunication: User ↔ Target ↔ Claude
 
