@@ -7,8 +7,21 @@
 3. Boot banner with git hash and build date
 4. Parameter dump (from EEPROM)
 5. Buzzer plays **G** (morse: `--.`) — blocking
-6. Prompt `>` appears — system ready
+6. Prompt `>` appears — CDC commands work from here
 7. Buzzer plays **Z** (morse: `--..`) — non-blocking, you can type during it
+8. **3 second delay** — buttons disabled, endstops active
+9. **Input self-test** — reads all 6 inputs (4 buttons + 2 endstops)
+   - All clear → buzzer plays **OK** (morse: `--- -.-`) → buttons enabled → system ready
+   - Any input stuck LOW → prints which input is stuck (e.g. `STUCK: ES_L`) → buzzer plays **CQ CQ CQ DE LZ1CCM** → 2s pause → re-checks → repeats until fault cleared
+
+### Input Self-Test Fault Loop
+
+If a button is physically stuck, a cable is shorted, or an endstop is blocked at power-on,
+the system refuses to enable buttons and loops the CQ call until the problem is fixed.
+This prevents unintended motor movement from a stuck jog button at startup.
+
+Buttons can also be manually controlled via CDC commands (`buttons on` / `buttons off`)
+at any time, regardless of boot state.
 
 ## CDC Terminal Commands
 
@@ -37,6 +50,15 @@ Connect via serial terminal (minicom, screen, etc.) at any baud rate (USB CDC).
 | `set spmm <n>` | Steps per mm — depends on driver microstepping and lead screw pitch |
 | `params` | Show all current parameters |
 | `save` | Save parameters to EEPROM (persists across resets) |
+
+### Input Control
+
+| Command | Description |
+|---------|-------------|
+| `buttons on` | Enable button inputs (default after boot self-test passes) |
+| `buttons off` | Disable button inputs — EXTI events ignored |
+| `endstops on` | Enable endstop inputs (default always on) |
+| `endstops off` | Disable endstop inputs — **use with caution** |
 
 ### Diagnostics
 

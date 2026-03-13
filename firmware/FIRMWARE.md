@@ -345,6 +345,10 @@ PC13 LED toggles every 500ms from main loop — visual confirmation that firmwar
 is running and not stuck. If LED stops blinking, CPU is halted (GDB attached)
 or crashed (check Error_Handler which blinks fast at 50ms).
 
+## Fun Moments
+
+See [FUN.md](FUN.md) — the entertaining side of the development process.
+
 ## Source Files
 
 | File | Description |

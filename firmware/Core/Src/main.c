@@ -91,6 +91,8 @@ TIM_HandleTypeDef htim2;
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 volatile uint8_t diagMode = 0;
+volatile uint8_t buttonsEn = 0;   /* 0 = ignore button EXTI events — starts OFF, enabled after boot OK */
+volatile uint8_t endstopsEn = 1;  /* 0 = ignore endstop EXTI events */
 volatile uint32_t buzzTick = 0;
 volatile uint8_t  buzzActive = 0;
 
@@ -205,7 +207,7 @@ KeyCode ParseKey(uint8_t byte)
         if (byte == '[') { state = SEQ_BRACKET; return KEY_SEQUENCE; }
         else if (byte == 'O') { state = SEQ_O;       return KEY_SEQUENCE; }
         state = SEQ_IDLE;
-        return KEY_ESC;
+        return KEY_SEQUENCE;  /* swallow unknown ESC+byte */
 
     case SEQ_O:
         state = SEQ_IDLE;
@@ -217,12 +219,16 @@ KeyCode ParseKey(uint8_t byte)
         break;
 
     case SEQ_BRACKET:
+        /* CSI sequences: ESC [ (params) (final byte 0x40-0x7E)
+           Eat intermediate/parameter bytes (0x20-0x3F) silently,
+           only act on the final byte, ignore unknown finals. */
+        if (byte >= 0x20 && byte <= 0x3F) return KEY_SEQUENCE;  /* param/intermediate — stay in state */
         state = SEQ_IDLE;
         if      (byte == 'A') return KEY_UP;
         else if (byte == 'B') return KEY_DOWN;
         else if (byte == 'C') return KEY_RIGHT;
         else if (byte == 'D') return KEY_LEFT;
-        break;
+        return KEY_SEQUENCE;  /* unknown final — swallow it */
     }
 
     return KEY_NONE;
@@ -784,6 +790,10 @@ void ProcessLine(void)
             printf("diag_inputs %s\r\n", diagMode ? "ON" : "OFF");
         }
         else if (strcmp(cmd, "combo")  == 0) RunCombo();
+        else if (strcmp(cmd, "buttons on")  == 0) { buttonsEn = 1; printf("buttons ON\r\n"); }
+        else if (strcmp(cmd, "buttons off") == 0) { buttonsEn = 0; printf("buttons OFF\r\n"); }
+        else if (strcmp(cmd, "endstops on")  == 0) { endstopsEn = 1; printf("endstops ON\r\n"); }
+        else if (strcmp(cmd, "endstops off") == 0) { endstopsEn = 0; printf("endstops OFF\r\n"); }
         else if (strcmp(cmd, "diag_outputs") == 0 || strcmp(cmd, "do") == 0) {
             printf("password: ");
         }
@@ -947,6 +957,7 @@ int main(void)
 
   morse("V");
 
+  printf("\033[2J\033[H");  /* clear screen */
   printf("\r\n========================================\r\n");
   printf("  stepper_sc  %s  %s\r\n", GIT_HASH, BUILD_DATE);
   printf("  STM32F411CEU6 @ 96 MHz\r\n");
@@ -958,6 +969,12 @@ int main(void)
   morse("G");
 
   printf("> ");
+
+  /* Flush any bytes minicom sent during boot (init strings, ESC queries) */
+  rxHead = 0;
+  rxTail = 0;
+  lineLen = 0;
+  lineBuf[0] = '\0';
 
   MorseStart("Z");
 
@@ -979,6 +996,49 @@ int main(void)
 
     /* Non-blocking morse */
     MorseUpdate();
+
+    /* Boot sequence: Z → 3s delay → check inputs → OK → enable buttons
+       If any button/endstop is stuck LOW at boot, play CQ CQ CQ DE LZ1CCM
+       in a loop until all inputs are released. */
+    {
+        static uint8_t bootPhase = 0;  /* 0=wait Z, 1=delay, 2=check, 3=wait CQ, 4=pause, 5=play OK, 6=done */
+        static uint32_t bootTick = 0;
+        switch (bootPhase) {
+        case 0: /* wait for Z to finish */
+            if (!MorseIsBusy()) { bootTick = HAL_GetTick(); bootPhase = 1; }
+            break;
+        case 1: /* 3s delay */
+            if (HAL_GetTick() - bootTick >= 3000) bootPhase = 2;
+            break;
+        case 2: { /* check all inputs — active LOW = stuck */
+            uint8_t stuck = 0;
+            if (!HAL_GPIO_ReadPin(ES_L_GPIO_Port, ES_L_Pin))         { stuck = 1; printf("STUCK: ES_L\r\n"); }
+            if (!HAL_GPIO_ReadPin(ES_R_GPIO_Port, ES_R_Pin))         { stuck = 1; printf("STUCK: ES_R\r\n"); }
+            if (!HAL_GPIO_ReadPin(BUTT_JOGL_GPIO_Port, BUTT_JOGL_Pin)) { stuck = 1; printf("STUCK: JOGL\r\n"); }
+            if (!HAL_GPIO_ReadPin(BUTT_JOGR_GPIO_Port, BUTT_JOGR_Pin)) { stuck = 1; printf("STUCK: JOGR\r\n"); }
+            if (!HAL_GPIO_ReadPin(BUTT_STEPL_GPIO_Port, BUTT_STEPL_Pin)) { stuck = 1; printf("STUCK: STEPL\r\n"); }
+            if (!HAL_GPIO_ReadPin(BUTT_STEPR_GPIO_Port, BUTT_STEPR_Pin)) { stuck = 1; printf("STUCK: STEPR\r\n"); }
+            if (stuck) {
+                MorseStart("CQ CQ CQ DE LZ1CCM");
+                bootPhase = 3;
+            } else {
+                MorseStart("OK");
+                bootPhase = 5;
+            }
+            break;
+        }
+        case 3: /* wait CQ to finish */
+            if (!MorseIsBusy()) { bootTick = HAL_GetTick(); bootPhase = 4; }
+            break;
+        case 4: /* pause 2s then re-check */
+            if (HAL_GetTick() - bootTick >= 2000) bootPhase = 2;
+            break;
+        case 5: /* wait OK to finish */
+            if (!MorseIsBusy()) { buttonsEn = 1; printf("\r\nbuttons enabled\r\n> "); bootPhase = 6; }
+            break;
+        default: break;
+        }
+    }
 
     /* Buzzer off after 50ms */
     if (buzzActive && (HAL_GetTick() - buzzTick >= 50)) {
@@ -1266,6 +1326,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     {
     /* ---- Endstops: immediate stop, debounce in diag mode ---- */
     case ES_L_Pin:
+        if (!endstopsEn) break;
         if (!diagMode) { Stepper_Stop(); evtFlags |= EVT_ES_L; }
         else if (now - lastTick_esL >= DEBOUNCE_MS) {
             lastTick_esL = now;
@@ -1274,6 +1335,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         break;
 
     case ES_R_Pin:
+        if (!endstopsEn) break;
         if (!diagMode) { Stepper_Stop(); evtFlags |= EVT_ES_R; }
         else if (now - lastTick_esR >= DEBOUNCE_MS) {
             lastTick_esR = now;
@@ -1283,6 +1345,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
     /* ---- Jog buttons: both edges, debounce ---- */
     case BUTT_JOGL_Pin:
+        if (!buttonsEn) break;
         if (now - lastTick_jogL >= DEBOUNCE_MS) {
             lastTick_jogL = now;
             if (!HAL_GPIO_ReadPin(BUTT_JOGL_GPIO_Port, BUTT_JOGL_Pin)) {
@@ -1295,6 +1358,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         break;
 
     case BUTT_JOGR_Pin:
+        if (!buttonsEn) break;
         if (now - lastTick_jogR >= DEBOUNCE_MS) {
             lastTick_jogR = now;
             if (!HAL_GPIO_ReadPin(BUTT_JOGR_GPIO_Port, BUTT_JOGR_Pin)) {
@@ -1307,6 +1371,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         break;
 
     case BUTT_STEPL_Pin:
+        if (!buttonsEn) break;
         if (now - lastTick_stepL >= DEBOUNCE_MS) {
             lastTick_stepL = now;
             evtFlags |= EVT_STEPL;
@@ -1314,6 +1379,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         break;
 
     case BUTT_STEPR_Pin:
+        if (!buttonsEn) break;
         if (now - lastTick_stepR >= DEBOUNCE_MS) {
             lastTick_stepR = now;
             evtFlags |= EVT_STEPR;
