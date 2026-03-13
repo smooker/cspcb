@@ -46,6 +46,7 @@ typedef struct
     union { float f; uint32_t u; } jogmm;
     union { float f; uint32_t u; } stepmm;
     union { float f; uint32_t u; } spmm;
+    union { float f; uint32_t u; } dirinv;  /* 0=normal, 1=invert DIR */
 } params_t;
 
 extern union {

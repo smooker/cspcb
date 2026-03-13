@@ -790,10 +790,10 @@ void ProcessLine(void)
             printf("diag_inputs %s\r\n", diagMode ? "ON" : "OFF");
         }
         else if (strcmp(cmd, "combo")  == 0) RunCombo();
-        else if (strcmp(cmd, "buttons on")  == 0) { buttonsEn = 1; printf("buttons ON\r\n"); }
-        else if (strcmp(cmd, "buttons off") == 0) { buttonsEn = 0; printf("buttons OFF\r\n"); }
-        else if (strcmp(cmd, "endstops on")  == 0) { endstopsEn = 1; printf("endstops ON\r\n"); }
-        else if (strcmp(cmd, "endstops off") == 0) { endstopsEn = 0; printf("endstops OFF\r\n"); }
+        else if (strcmp((char *)lineBuf, "buttons on")  == 0) { buttonsEn = 1; printf("buttons ON\r\n"); }
+        else if (strcmp((char *)lineBuf, "buttons off") == 0) { buttonsEn = 0; printf("buttons OFF\r\n"); }
+        else if (strcmp((char *)lineBuf, "endstops on")  == 0) { endstopsEn = 1; printf("endstops ON\r\n"); }
+        else if (strcmp((char *)lineBuf, "endstops off") == 0) { endstopsEn = 0; printf("endstops OFF\r\n"); }
         else if (strcmp(cmd, "diag_outputs") == 0 || strcmp(cmd, "do") == 0) {
             printf("password: ");
         }
@@ -958,11 +958,11 @@ int main(void)
   morse("V");
 
   printf("\033[2J\033[H");  /* clear screen */
-  printf("\r\n========================================\r\n");
+  printf("\r\n===============================================\r\n");
   printf("  stepper_sc  %s  %s\r\n", GIT_HASH, BUILD_DATE);
   printf("  STM32F411CEU6 @ 96 MHz\r\n");
   printf("  type 'help' for commands\r\n");
-  printf("========================================\r\n");
+  printf("===============================================\r\n");
 
   Stepper_DumpParams();
 

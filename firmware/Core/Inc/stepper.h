@@ -16,6 +16,7 @@
 #define EE_ADDR_JOGMM       5
 #define EE_ADDR_STEPMM      6
 #define EE_ADDR_SPMM        7
+#define EE_ADDR_DIRINV      8
 
 /* ---- Timer clock --------------------------------------------------- */
 #define STEPPER_TIM_CLOCK   96000000UL          /* 96MHz                */

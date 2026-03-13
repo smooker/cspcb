@@ -1,15 +1,15 @@
 #!/bin/bash
-# Inject a command string into firmware's CDC RX ring buffer via GDB
-# Usage: ./inject_cmd.sh "mover 1"
-# Appends CR (0x0D) so firmware processes it as KEY_ENTER.
+# Inject one or more commands into firmware's CDC RX ring buffer via GDB
+# Usage: ./inject_cmd.sh "cmd1" "cmd2" "cmd3"
+# All commands are written in a single GDB session (one attach/detach).
+# Each command gets CR (0x0D) appended so firmware processes it as KEY_ENTER.
 
-CMD="$1"
-if [ -z "$CMD" ]; then
-    echo "Usage: $0 \"command\""
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 \"command1\" [\"command2\" ...]"
     exit 1
 fi
 
-# Build GDB script: read rxHead, write each byte, update rxHead
+# Build GDB script: read rxHead, write all commands + CRs, update rxHead
 TMPGDB=$(mktemp /tmp/gdb_inject.XXXXXX)
 
 cat > "$TMPGDB" <<'HEADER'
@@ -17,17 +17,19 @@ set $h = rxHead
 set $buf = (uint8_t *)&UserRxBufferFS
 HEADER
 
-# Write each command byte
-for (( i=0; i<${#CMD}; i++ )); do
-    BYTE=$(printf '%d' "'${CMD:$i:1}")
-    echo "set \$buf[\$h] = $BYTE" >> "$TMPGDB"
+# Write each command + CR
+for CMD in "$@"; do
+    for (( i=0; i<${#CMD}; i++ )); do
+        BYTE=$(printf '%d' "'${CMD:$i:1}")
+        echo "set \$buf[\$h] = $BYTE" >> "$TMPGDB"
+        echo "set \$h = (\$h + 1) % 512" >> "$TMPGDB"
+    done
+    # Append CR (0x0D) for KEY_ENTER
+    echo "set \$buf[\$h] = 13" >> "$TMPGDB"
     echo "set \$h = (\$h + 1) % 512" >> "$TMPGDB"
 done
 
-# Append CR (0x0D) for KEY_ENTER
 cat >> "$TMPGDB" <<'FOOTER'
-set $buf[$h] = 13
-set $h = ($h + 1) % 512
 set rxHead = $h
 detach
 FOOTER

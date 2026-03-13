@@ -110,6 +110,9 @@ void Stepper_LoadParams(void)
 
     if (EEPROM_Read(EE_ADDR_SPMM,     &val) == EEPROM_OK) motorParams.spmm.u     = val;
     else motorParams.spmm.u     = DEFAULT_SPMM;
+
+    if (EEPROM_Read(EE_ADDR_DIRINV,   &val) == EEPROM_OK) motorParams.dirinv.u   = val;
+    else motorParams.dirinv.u   = 0;
 }
 
 void Stepper_SaveParams(void)
@@ -121,26 +124,29 @@ void Stepper_SaveParams(void)
     EEPROM_Write(EE_ADDR_JOGMM,    motorParams.jogmm.u);
     EEPROM_Write(EE_ADDR_STEPMM,   motorParams.stepmm.u);
     EEPROM_Write(EE_ADDR_SPMM,     motorParams.spmm.u);
+    EEPROM_Write(EE_ADDR_DIRINV,   motorParams.dirinv.u);
     printf("params saved\r\n");
 }
 
 void Stepper_DumpParams(void)
 {
-    printf("\r\n-------------------------------\r\n");
-    printf("mmpsmax........: %7.3f mm/s\r\n",   motorParams.mmpsmax.f);
-    printf("mmpsmin........: %7.3f mm/s\r\n",   motorParams.mmpsmin.f);
-    printf("dvdtacc........: %7.3f mm/s2\r\n",  motorParams.dvdtacc.f);
-    printf("dvdtdecc.......: %7.3f mm/s2\r\n",  motorParams.dvdtdecc.f);
-    printf("jogmm..........: %7.3f mm\r\n",     motorParams.jogmm.f);
-    printf("stepmm.........: %7.3f mm\r\n",     motorParams.stepmm.f);
-    printf("spmm...........: %7lu steps/mm\r\n",motorParams.spmm.u);
-    printf("-------------------------------\r\n");
-    printf("pulse_ticks....: %lu\r\n", (uint32_t)PULSE_TICKS);
-    printf("min_period.....: %lu ticks (%.1f mm/s)\r\n",
+    printf("\r\n-----------------------------------------------\r\n");
+    printf("  mmpsmax........: %7.3f mm/s\r\n",   motorParams.mmpsmax.f);
+    printf("  mmpsmin........: %7.3f mm/s\r\n",   motorParams.mmpsmin.f);
+    printf("  dvdtacc........: %7.3f mm/s2\r\n",  motorParams.dvdtacc.f);
+    printf("  dvdtdecc.......: %7.3f mm/s2\r\n",  motorParams.dvdtdecc.f);
+    printf("  jogmm..........: %7.3f mm\r\n",     motorParams.jogmm.f);
+    printf("  stepmm.........: %7.3f mm\r\n",     motorParams.stepmm.f);
+    printf("  spmm...........: %7lu steps/mm\r\n", motorParams.spmm.u);
+    printf("  dirinv.........: %7lu %s\r\n", motorParams.dirinv.u,
+              motorParams.dirinv.u ? "(inverted)" : "(normal)");
+    printf("-----------------------------------------------\r\n");
+    printf("  pulse_ticks....: %lu\r\n", (uint32_t)PULSE_TICKS);
+    printf("  min_period.....: %lu ticks (%.1f mm/s)\r\n",
               MmpsToTicks(motorParams.mmpsmax.f), motorParams.mmpsmax.f);
-    printf("max_period.....: %lu ticks (%.1f mm/s)\r\n",
+    printf("  max_period.....: %lu ticks (%.1f mm/s)\r\n",
               MmpsToTicks(motorParams.mmpsmin.f), motorParams.mmpsmin.f);
-    printf("-------------------------------\r\n");
+    printf("-----------------------------------------------\r\n");
 }
 
 void Stepper_SetParam(const char *name, float value)
@@ -152,6 +158,7 @@ void Stepper_SetParam(const char *name, float value)
     else if (strcmp(name, "jogmm")    == 0) motorParams.jogmm.f    = value;
     else if (strcmp(name, "stepmm")   == 0) motorParams.stepmm.f   = value;
     else if (strcmp(name, "spmm")     == 0) motorParams.spmm.u     = (uint32_t)value;
+    else if (strcmp(name, "dirinv")   == 0) motorParams.dirinv.u   = (uint32_t)value;
     else { printf("unknown param: %s\r\n", name); return; }
     printf("%s = %.3f\r\n", name, value);
 }
@@ -169,7 +176,7 @@ void Stepper_Init(TIM_HandleTypeDef *htim)
     /* fixed pulse width */
     __HAL_TIM_SET_COMPARE(stepTim, TIM_CHANNEL_3, PULSE_TICKS);
 
-    printf("stepper init ok\r\n");
+    printf("  stepper init ok\r\n");
 }
 
 /* ---- Move --------------------------------------------------------- */
@@ -183,9 +190,12 @@ static void StartMove(int32_t steps)
     }
     if (steps == 0) return;
 
-    /* set direction */
-    HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin,
-                      steps > 0 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    /* set direction (apply dirinv from EEPROM) */
+    {
+        uint8_t hw = (steps > 0) ^ (motorParams.dirinv.u != 0);
+        HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin,
+                          hw ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    }
 
     /* wait for DIR to settle */
     uint32_t t = HAL_GetTick();
@@ -279,9 +289,12 @@ void Stepper_RunContinuous(int8_t dir)
         return;
     }
 
-    /* set direction */
-    HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin,
-                      dir > 0 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    /* set direction (apply dirinv from EEPROM) */
+    {
+        uint8_t hw = (dir > 0) ^ (motorParams.dirinv.u != 0);
+        HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin,
+                          hw ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    }
 
     uint32_t t = HAL_GetTick();
     while (HAL_GetTick() == t);
