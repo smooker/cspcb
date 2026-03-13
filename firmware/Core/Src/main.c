@@ -89,6 +89,8 @@ TIM_HandleTypeDef htim2;
 
 //Externs
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
+
+volatile uint8_t diagMode = 0;
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 //
@@ -672,6 +674,10 @@ void ProcessLine(void)
         else if (strcmp(cmd, "cls")    == 0) printf("\033[2J\033[H>");
         else if (strcmp(cmd, "uptime") == 0) printf("uptime: %lu ms\r\n", HAL_GetTick());
         else if (strcmp(cmd, "reset")  == 0) NVIC_SystemReset();
+        else if (strcmp(cmd, "diag")   == 0) {
+            diagMode = !diagMode;
+            printf("diag mode %s\r\n", diagMode ? "ON" : "OFF");
+        }
         else if (strcmp(cmd, "help")   == 0)
             printf("commands:\r\n"
                       "  move <mm>          move by mm\r\n"
@@ -685,7 +691,7 @@ void ProcessLine(void)
                       "  set jogmm    <f>   jog distance mm\r\n"
                       "  set stepmm   <f>   step distance mm\r\n"
                       "  set spmm     <n>   steps per mm\r\n"
-                      "  params, save, dump, stop, cls, uptime, reset\r\n");
+                      "  params, save, dump, stop, diag, cls, uptime, reset\r\n");
         else
             printf(" unknown: %s\r\n", cmd);
     }
@@ -794,15 +800,16 @@ int main(void)
   lineLen = 0;
   lineBuf[0] = '\0';
 
-  Stepper_LoadParams();   /* load from EEPROM first */
-  printf("spmm after load: %lu\r\n", motorParams.spmm.u);
-  Stepper_Init(&htim2);  /* then init — DumpParams will show correct values */
+  Stepper_LoadParams();
+  Stepper_Init(&htim2);
 
-  // initParams();
-  // writeParams();
-  // BKPT;
-  // readParams();
-  // BKPT;
+  printf("\r\n\033[2J\033[H");
+  printf("========================================\r\n");
+  printf("  stepper_sc  %s  %s\r\n", GIT_HASH, BUILD_DATE);
+  printf("  STM32F411CEU6 @ 96 MHz\r\n");
+  printf("  type 'help' for commands\r\n");
+  printf("========================================\r\n");
+  printf("> ");
 
   while (1)
   {
@@ -836,13 +843,14 @@ int main(void)
             printf("KEY_RIGHT pressed.\r\n");
             break;
         case KEY_ENTER:
-            /* handle enter */
+            printf("\r\n");
             if (lineLen > 0)
             {
-                lineBuf[lineLen] = '\0';  /* null terminate for sscanf */
+                lineBuf[lineLen] = '\0';
                 ProcessLine();
                 lineLen = 0;
             }
+            printf("> ");
             break;
         case KEY_BACKSPACE:
             if (lineLen > 0)
@@ -1004,14 +1012,14 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : ES_L_Pin ES_R_Pin BUTT_JOGL_Pin BUTT_JOGR_Pin */
   GPIO_InitStruct.Pin = ES_L_Pin|ES_R_Pin|BUTT_JOGL_Pin|BUTT_JOGR_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : BUTT_STEPL_Pin BUTT_STEPR_Pin */
   GPIO_InitStruct.Pin = BUTT_STEPL_Pin|BUTT_STEPR_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : DIR_Pin BUZZ_Pin */
@@ -1022,10 +1030,84 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* Enable EXTI interrupts for buttons and endstops */
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 2, 0);      /* BUTT_STEPL PB0 */
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+  HAL_NVIC_SetPriority(EXTI1_IRQn, 2, 0);      /* BUTT_STEPR PB1 */
+  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 1, 0);      /* ES_L PA3 */
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 1, 0);      /* ES_R PA4 */
+  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 2, 0);    /* BUTT_JOGL PA6, BUTT_JOGR PA7 */
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
+
+/* ---- Button debounce (30 ms) ------------------------------------------ */
+#define DEBOUNCE_MS  30
+
+static volatile uint32_t lastTick_jogL  = 0;
+static volatile uint32_t lastTick_jogR  = 0;
+static volatile uint32_t lastTick_stepL = 0;
+static volatile uint32_t lastTick_stepR = 0;
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    uint32_t now = HAL_GetTick();
+
+    switch (GPIO_Pin)
+    {
+    /* ---- Endstops: immediate, no debounce ---- */
+    case ES_L_Pin:
+        if (!diagMode) Stepper_Stop();
+        printf("ES_L hit\r\n");
+        break;
+
+    case ES_R_Pin:
+        if (!diagMode) Stepper_Stop();
+        printf("ES_R hit\r\n");
+        break;
+
+    /* ---- Buttons: 30 ms debounce (skipped in diag mode) ---- */
+    case BUTT_JOGL_Pin:
+        if (diagMode) { printf("BUTT_JOGL\r\n"); break; }
+        if (now - lastTick_jogL >= DEBOUNCE_MS) {
+            lastTick_jogL = now;
+            Stepper_Jog(-1.0f);
+        }
+        break;
+
+    case BUTT_JOGR_Pin:
+        if (diagMode) { printf("BUTT_JOGR\r\n"); break; }
+        if (now - lastTick_jogR >= DEBOUNCE_MS) {
+            lastTick_jogR = now;
+            Stepper_Jog(1.0f);
+        }
+        break;
+
+    case BUTT_STEPL_Pin:
+        if (diagMode) { printf("BUTT_STEPL\r\n"); break; }
+        if (now - lastTick_stepL >= DEBOUNCE_MS) {
+            lastTick_stepL = now;
+            Stepper_Move(-motorParams.stepmm.f);
+        }
+        break;
+
+    case BUTT_STEPR_Pin:
+        if (diagMode) { printf("BUTT_STEPR\r\n"); break; }
+        if (now - lastTick_stepR >= DEBOUNCE_MS) {
+            lastTick_stepR = now;
+            Stepper_Move(motorParams.stepmm.f);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
 
 /* USER CODE END 4 */
 

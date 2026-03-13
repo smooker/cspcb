@@ -118,10 +118,17 @@ MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
 # AS defines
 AS_DEFS = 
 
+# Git version
+GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY := $(shell git diff --quiet 2>/dev/null || echo "-dirty")
+BUILD_DATE := $(shell date '+%Y-%m-%d_%H:%M')
+
 # C defines
 C_DEFS =  \
 -DUSE_HAL_DRIVER \
--DSTM32F411xE
+-DSTM32F411xE \
+-DGIT_HASH=\"$(GIT_HASH)$(GIT_DIRTY)\" \
+-DBUILD_DATE=\"$(BUILD_DATE)\"
 
 
 # AS includes

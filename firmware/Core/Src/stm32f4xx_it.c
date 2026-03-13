@@ -241,4 +241,30 @@ void OTG_FS_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+void EXTI0_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);   /* BUTT_STEPL */
+}
+
+void EXTI1_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_1);   /* BUTT_STEPR */
+}
+
+void EXTI3_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_3);   /* ES_L */
+}
+
+void EXTI4_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_4);   /* ES_R */
+}
+
+void EXTI9_5_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_6);   /* BUTT_JOGL */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_7);   /* BUTT_JOGR */
+}
+
 /* USER CODE END 1 */
