@@ -47,6 +47,7 @@ void     Stepper_Init(TIM_HandleTypeDef *htim);
 void     Stepper_Move(float mm);
 void     Stepper_MoveSteps(int32_t steps);
 void     Stepper_Jog(float mm);
+void     Stepper_RunContinuous(int8_t dir);
 void     Stepper_Stop(void);
 uint8_t  Stepper_IsBusy(void);
 void     Stepper_ISR(void);

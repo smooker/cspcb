@@ -272,12 +272,62 @@ void Stepper_Jog(float mm)
     StartMove(steps);
 }
 
-void Stepper_Stop(void)
+void Stepper_RunContinuous(int8_t dir)
 {
     if (stepperState != STEPPER_IDLE)
     {
+        printf("stepper busy\r\n");
+        return;
+    }
+
+    /* set direction */
+    HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin,
+                      dir > 0 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+    uint32_t t = HAL_GetTick();
+    while (HAL_GetTick() == t);
+
+    stepsRemaining = 0x7FFFFFFF;   /* run "forever" */
+    stepCount      = 0;
+    decelCount     = 0;
+    minPeriod      = MmpsToTicks(motorParams.mmpsmax.f);
+    maxPeriod      = MmpsToTicks(motorParams.mmpsmin.f);
+    currentPeriod  = maxPeriod;
+
+    BuildRampTables();
+    decelSteps = decelSize;        /* only used when Stop() triggers decel */
+    accelIndex = 0;
+    decelIndex = decelSize - 1;
+
+    stepperState = STEPPER_ACCEL;
+
+    TIM_OC_InitTypeDef sConfig = {0};
+    sConfig.OCMode     = TIM_OCMODE_PWM1;
+    sConfig.OCPolarity = TIM_OCPOLARITY_HIGH;
+    sConfig.OCFastMode = TIM_OCFAST_DISABLE;
+    sConfig.Pulse      = PULSE_TICKS;
+    HAL_TIM_PWM_ConfigChannel(stepTim, &sConfig, TIM_CHANNEL_3);
+
+    __HAL_TIM_SET_AUTORELOAD(stepTim, currentPeriod - 1);
+    __HAL_TIM_SET_COMPARE(stepTim, TIM_CHANNEL_3, PULSE_TICKS);
+    __HAL_TIM_SET_COUNTER(stepTim, 0);
+
+    HAL_TIM_PWM_Start_IT(stepTim, TIM_CHANNEL_3);
+
+    printf("continuous %s\r\n", dir > 0 ? "R" : "L");
+}
+
+void Stepper_Stop(void)
+{
+    if (stepperState == STEPPER_CONST || stepperState == STEPPER_ACCEL)
+    {
+        /* find matching decel index for current speed */
+        decelIndex = 0;
+        while (decelIndex < decelSize - 1 && decelTable[decelIndex] > currentPeriod)
+            decelIndex++;
+        /* ensure enough steps to decelerate */
+        stepsRemaining = decelIndex + 2;
         stepperState = STEPPER_DECEL;
-        printf("stopping...\r\n");
     }
 }
 

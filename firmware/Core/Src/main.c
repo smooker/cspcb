@@ -817,6 +817,16 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+    /* Heartbeat LED — toggle every 500ms */
+    {
+        static uint32_t ledTick = 0;
+        uint32_t now = HAL_GetTick();
+        if (now - ledTick >= 500) {
+            ledTick = now;
+            HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin);
+        }
+    }
+
     /* Process button/endstop events from ISR */
     ProcessEvents();
 
@@ -1013,9 +1023,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_USER_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ES_L_Pin ES_R_Pin BUTT_JOGL_Pin BUTT_JOGR_Pin */
-  GPIO_InitStruct.Pin = ES_L_Pin|ES_R_Pin|BUTT_JOGL_Pin|BUTT_JOGR_Pin;
+  /*Configure GPIO pins : ES_L_Pin ES_R_Pin — endstops, falling only */
+  GPIO_InitStruct.Pin = ES_L_Pin|ES_R_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : BUTT_JOGL_Pin BUTT_JOGR_Pin — jog, both edges */
+  GPIO_InitStruct.Pin = BUTT_JOGL_Pin|BUTT_JOGR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
@@ -1054,10 +1070,14 @@ static void MX_GPIO_Init(void)
 
 #define EVT_ES_L      (1U << 0)
 #define EVT_ES_R      (1U << 1)
-#define EVT_JOGL      (1U << 2)
-#define EVT_JOGR      (1U << 3)
-#define EVT_STEPL     (1U << 4)
-#define EVT_STEPR     (1U << 5)
+#define EVT_JOGL_DN   (1U << 2)
+#define EVT_JOGL_UP   (1U << 3)
+#define EVT_JOGR_DN   (1U << 4)
+#define EVT_JOGR_UP   (1U << 5)
+#define EVT_STEPL     (1U << 6)
+#define EVT_STEPR     (1U << 7)
+
+#define JOG_HOLD_MS   300
 
 static volatile uint32_t evtFlags = 0;
 static volatile uint32_t lastTick_jogL  = 0;
@@ -1066,6 +1086,13 @@ static volatile uint32_t lastTick_stepL = 0;
 static volatile uint32_t lastTick_stepR = 0;
 static volatile uint32_t lastTick_esL   = 0;
 static volatile uint32_t lastTick_esR   = 0;
+
+/* Jog state machine */
+typedef enum { JOG_IDLE, JOG_PRESSED, JOG_STEP, JOG_CONT } JogState;
+static volatile JogState jogStateL = JOG_IDLE;
+static volatile JogState jogStateR = JOG_IDLE;
+static volatile uint32_t jogPressTickL = 0;
+static volatile uint32_t jogPressTickR = 0;
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
@@ -1090,18 +1117,28 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         }
         break;
 
-    /* ---- Buttons: 30 ms debounce ---- */
+    /* ---- Jog buttons: both edges, debounce ---- */
     case BUTT_JOGL_Pin:
         if (now - lastTick_jogL >= DEBOUNCE_MS) {
             lastTick_jogL = now;
-            evtFlags |= EVT_JOGL;
+            if (!HAL_GPIO_ReadPin(BUTT_JOGL_GPIO_Port, BUTT_JOGL_Pin)) {
+                jogPressTickL = now;
+                evtFlags |= EVT_JOGL_DN;
+            } else {
+                evtFlags |= EVT_JOGL_UP;
+            }
         }
         break;
 
     case BUTT_JOGR_Pin:
         if (now - lastTick_jogR >= DEBOUNCE_MS) {
             lastTick_jogR = now;
-            evtFlags |= EVT_JOGR;
+            if (!HAL_GPIO_ReadPin(BUTT_JOGR_GPIO_Port, BUTT_JOGR_Pin)) {
+                jogPressTickR = now;
+                evtFlags |= EVT_JOGR_DN;
+            } else {
+                evtFlags |= EVT_JOGR_UP;
+            }
         }
         break;
 
@@ -1127,24 +1164,71 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 /* Called from main loop — safe to printf here */
 void ProcessEvents(void)
 {
+    uint32_t now = HAL_GetTick();
     uint32_t flags = evtFlags;
-    if (!flags) return;
-    evtFlags = 0;
+    evtFlags &= ~flags;  /* clear only the flags we read */
 
+    /* ---- Endstops ---- */
     if (flags & EVT_ES_L) {
         printf("ES_L hit\r\n> ");
+        jogStateL = JOG_IDLE;
+        jogStateR = JOG_IDLE;
     }
     if (flags & EVT_ES_R) {
         printf("ES_R hit\r\n> ");
+        jogStateL = JOG_IDLE;
+        jogStateR = JOG_IDLE;
     }
-    if (flags & EVT_JOGL) {
-        if (diagMode) printf("BUTT_JOGL\r\n> ");
-        else          Stepper_Jog(-1.0f);
+
+    /* ---- Jog Left ---- */
+    if (flags & EVT_JOGL_DN) {
+        if (diagMode) { printf("JOGL_DN\r\n> "); }
+        else {
+            jogStateL = JOG_PRESSED;
+            Stepper_Jog(-1.0f);   /* immediate short jog */
+        }
     }
-    if (flags & EVT_JOGR) {
-        if (diagMode) printf("BUTT_JOGR\r\n> ");
-        else          Stepper_Jog(1.0f);
+    if (flags & EVT_JOGL_UP) {
+        if (diagMode) { printf("JOGL_UP\r\n> "); }
+        else if (jogStateL == JOG_CONT) {
+            Stepper_Stop();
+            printf("jog L stop\r\n> ");
+        }
+        jogStateL = JOG_IDLE;
     }
+
+    /* ---- Jog Right ---- */
+    if (flags & EVT_JOGR_DN) {
+        if (diagMode) { printf("JOGR_DN\r\n> "); }
+        else {
+            jogStateR = JOG_PRESSED;
+            Stepper_Jog(1.0f);    /* immediate short jog */
+        }
+    }
+    if (flags & EVT_JOGR_UP) {
+        if (diagMode) { printf("JOGR_UP\r\n> "); }
+        else if (jogStateR == JOG_CONT) {
+            Stepper_Stop();
+            printf("jog R stop\r\n> ");
+        }
+        jogStateR = JOG_IDLE;
+    }
+
+    /* ---- Jog hold detection (polling, no event needed) ---- */
+    if (!diagMode) {
+        if (jogStateL == JOG_PRESSED && !Stepper_IsBusy()
+            && (now - jogPressTickL >= JOG_HOLD_MS)) {
+            jogStateL = JOG_CONT;
+            Stepper_RunContinuous(-1);
+        }
+        if (jogStateR == JOG_PRESSED && !Stepper_IsBusy()
+            && (now - jogPressTickR >= JOG_HOLD_MS)) {
+            jogStateR = JOG_CONT;
+            Stepper_RunContinuous(1);
+        }
+    }
+
+    /* ---- Step buttons ---- */
     if (flags & EVT_STEPL) {
         if (diagMode) printf("BUTT_STEPL\r\n> ");
         else          Stepper_Move(-motorParams.stepmm.f);
