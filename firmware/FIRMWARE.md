@@ -102,6 +102,31 @@ GDB commands:
 
 SVD register inspection via PyCortexMDebug + STM32F411.svd.
 
+## Logic Analyzer Capture (2026-03-13)
+
+FX2 Saleae Logic @ 1 MHz, 5M samples, `move 10` command (4000 pulses).
+
+**Channel mapping**: D7 = PULSE (PB10). D0-D6 static high. DIR (PB14) not connected to FX2.
+
+### Measured ramp profile
+
+| Phase | Pulses | Period range | Freq range | Steps |
+|-------|--------|-------------|------------|-------|
+| Accel | 0–393 | 2147→240 µs | 466→4167 Hz | 394 |
+| Const | 394–3603 | 240 µs | 4167 Hz | 3210 |
+| Decel | 3604–3999 | 2400 µs (flat) | 417 Hz | 396 |
+
+### BUG: No deceleration ramp
+
+At pulse 3604, period jumps instantly from 240 µs to 2400 µs (10× speed drop).
+The motor goes from full speed to near-minimum speed in one step, then crawls.
+
+**Root cause** (stepper.c, CONST→DECEL transition): `decelIndex = 0` starts at the slow
+end of decelTable (index 0 = maxPeriod). Should be `decelIndex = decelSize - 1` to start
+from the fast end and ramp down symmetrically to accel.
+
+**Capture file**: `capture_all.sr` in project root.
+
 ## Source Files
 
 | File | Description |

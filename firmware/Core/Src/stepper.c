@@ -335,7 +335,7 @@ void Stepper_ISR(void)
     case STEPPER_CONST:
         if (stepsRemaining <= decelSteps)
         {
-            decelIndex   = 0;  /* start from fast end of decel table */
+            decelIndex   = decelSize - 1;  /* start from fast end of decel table */
             stepperState = STEPPER_DECEL;
         }
         break;
