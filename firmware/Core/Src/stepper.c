@@ -169,8 +169,7 @@ void Stepper_Init(TIM_HandleTypeDef *htim)
     /* fixed pulse width */
     __HAL_TIM_SET_COMPARE(stepTim, TIM_CHANNEL_3, PULSE_TICKS);
 
-    printf("\r\nstepper init ok\r\n");
-    Stepper_DumpParams();
+    printf("stepper init ok\r\n");
 }
 
 /* ---- Move --------------------------------------------------------- */

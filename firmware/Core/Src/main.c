@@ -91,6 +91,16 @@ TIM_HandleTypeDef htim2;
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 volatile uint8_t diagMode = 0;
+volatile uint32_t buzzTick = 0;
+volatile uint8_t  buzzActive = 0;
+
+/* Non-blocking morse state machine */
+typedef enum { MRS_IDLE, MRS_TONE, MRS_INTER, MRS_LETTER } MorseState;
+static MorseState mrsState = MRS_IDLE;
+static const char *mrsText = NULL;
+static uint8_t mrsCharIdx = 0;
+static uint8_t mrsSymIdx  = 0;
+static uint32_t mrsTick   = 0;
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 //
@@ -167,6 +177,9 @@ static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void ProcessEvents(void);
 void RunCombo(void);
+void MorseStart(const char *text);
+void MorseUpdate(void);
+uint8_t MorseIsBusy(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -378,6 +391,97 @@ void dash()
     HAL_GPIO_WritePin(LED_USER_GPIO_Port, LED_USER_Pin, GPIO_PIN_SET);
 
     HAL_Delay(interTime);
+}
+
+/* Non-blocking morse — call MorseStart() once, MorseUpdate() from main loop */
+void MorseStart(const char *text)
+{
+    mrsText = text;
+    mrsCharIdx = 0;
+    mrsSymIdx  = 0;
+    mrsState   = MRS_LETTER;  /* will pick first char on next update */
+    mrsTick    = HAL_GetTick();
+}
+
+uint8_t MorseIsBusy(void) { return mrsState != MRS_IDLE; }
+
+void MorseUpdate(void)
+{
+    if (mrsState == MRS_IDLE) return;
+    uint32_t now = HAL_GetTick();
+    uint32_t elapsed = now - mrsTick;
+
+    switch (mrsState)
+    {
+    case MRS_LETTER: {
+        /* Pick next character */
+        char ch = mrsText[mrsCharIdx];
+        if (ch == '\0') {
+            /* Done */
+            HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(LED_USER_GPIO_Port, LED_USER_Pin, GPIO_PIN_SET);
+            mrsState = MRS_IDLE;
+            return;
+        }
+        mrsSymIdx = 0;
+        /* Get morse pattern for this character */
+        const char *pattern = NULL;
+        if (ch >= 'A' && ch <= 'Z')      pattern = morseCode[ch - 'A' + 10];
+        else if (ch >= 'a' && ch <= 'z')  pattern = morseCode[ch - 'a' + 10];
+        else if (ch >= '0' && ch <= '9')  pattern = morseCode[ch - '0'];
+        if (!pattern || pattern[0] == '\0') {
+            /* Unknown char or space — just pause */
+            mrsTick = now;
+            mrsCharIdx++;
+            return;
+        }
+        /* Start first tone */
+        HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(LED_USER_GPIO_Port, LED_USER_Pin, GPIO_PIN_RESET);
+        mrsTick = now;
+        mrsState = MRS_TONE;
+        break;
+    }
+    case MRS_TONE: {
+        /* Currently sounding — wait for dot or dash duration */
+        const char *pattern = NULL;
+        char ch = mrsText[mrsCharIdx];
+        if (ch >= 'A' && ch <= 'Z')      pattern = morseCode[ch - 'A' + 10];
+        else if (ch >= 'a' && ch <= 'z')  pattern = morseCode[ch - 'a' + 10];
+        else if (ch >= '0' && ch <= '9')  pattern = morseCode[ch - '0'];
+        uint32_t dur = (pattern[mrsSymIdx] == '-') ? dashTime : dotTime;
+        if (elapsed >= dur) {
+            /* Tone done — silence */
+            HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(LED_USER_GPIO_Port, LED_USER_Pin, GPIO_PIN_SET);
+            mrsSymIdx++;
+            mrsTick = now;
+            if (pattern[mrsSymIdx] == '\0') {
+                /* Letter done — inter-letter gap */
+                mrsCharIdx++;
+                mrsState = MRS_LETTER;
+                /* Wait letterTime before next letter */
+                mrsTick = now - interTime + (3 * dotTime);  /* hack: make MRS_LETTER wait 3*dotTime */
+            } else {
+                mrsState = MRS_INTER;
+            }
+        }
+        break;
+    }
+    case MRS_INTER:
+        /* Inter-symbol gap */
+        if (elapsed >= interTime) {
+            /* Start next tone */
+            HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(LED_USER_GPIO_Port, LED_USER_Pin, GPIO_PIN_RESET);
+            mrsTick = now;
+            mrsState = MRS_TONE;
+        }
+        break;
+    case MRS_IDLE:
+    default:
+        break;
+    }
 }
 
 int _write(int file, char *ptr, int len)
@@ -674,12 +778,41 @@ void ProcessLine(void)
         else if (strcmp(cmd, "dump")   == 0) dumpVars();
         else if (strcmp(cmd, "cls")    == 0) printf("\033[2J\033[H>");
         else if (strcmp(cmd, "uptime") == 0) printf("uptime: %lu ms\r\n", HAL_GetTick());
-        else if (strcmp(cmd, "reset")  == 0) NVIC_SystemReset();
-        else if (strcmp(cmd, "diag")   == 0) {
+        else if (strcmp(cmd, "reset")  == 0) { printf("\033[2J\033[H"); HAL_Delay(50); NVIC_SystemReset(); }
+        else if (strcmp(cmd, "diag_inputs") == 0 || strcmp(cmd, "di") == 0) {
             diagMode = !diagMode;
-            printf("diag mode %s\r\n", diagMode ? "ON" : "OFF");
+            printf("diag_inputs %s\r\n", diagMode ? "ON" : "OFF");
         }
         else if (strcmp(cmd, "combo")  == 0) RunCombo();
+        else if (strcmp(cmd, "diag_outputs") == 0 || strcmp(cmd, "do") == 0) {
+            printf("password: ");
+        }
+        else if (strcmp(cmd, "motorola") == 0) {
+            printf("diag_outputs: 16000 steps R/L @ 1kHz (reset to stop)\r\n");
+            TIM_OC_InitTypeDef sConfig = {0};
+            sConfig.OCMode     = TIM_OCMODE_PWM1;
+            sConfig.OCPolarity = TIM_OCPOLARITY_HIGH;
+            sConfig.OCFastMode = TIM_OCFAST_DISABLE;
+            sConfig.Pulse      = 48000;
+            HAL_TIM_PWM_ConfigChannel(&htim2, &sConfig, TIM_CHANNEL_3);
+            __HAL_TIM_SET_AUTORELOAD(&htim2, 96000 - 1);  /* 1kHz */
+            __HAL_TIM_SET_COUNTER(&htim2, 0);
+            while (1) {
+                HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin, GPIO_PIN_SET);
+                HAL_Delay(1);
+                HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+                HAL_Delay(16000);  /* 16000 pulses @ 1kHz = 16s */
+                HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+                HAL_Delay(500);
+
+                HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin, GPIO_PIN_RESET);
+                HAL_Delay(1);
+                HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+                HAL_Delay(16000);
+                HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+                HAL_Delay(500);
+            }
+        }
         else if (strcmp(cmd, "help")   == 0)
             printf("commands:\r\n"
                       "  move <mm>          move by mm\r\n"
@@ -693,7 +826,9 @@ void ProcessLine(void)
                       "  set jogmm    <f>   jog distance mm\r\n"
                       "  set stepmm   <f>   step distance mm\r\n"
                       "  set spmm     <n>   steps per mm\r\n"
-                      "  params, save, dump, stop, diag, cls, uptime, reset\r\n"
+                      "  params, save, dump, stop, combo, cls, uptime, reset\r\n"
+                      "  diag_inputs (di)   toggle button/endstop diag mode\r\n"
+                      "  diag_outputs (do)  PULSE+DIR test loop (reset to stop)\r\n"
                       "buttons:\r\n"
                       "  JOGL/R short       Jog(jogmm) with ramps\r\n"
                       "  JOGL/R hold>300ms  RunContinuous(mmpsmax) until release/endstop\r\n"
@@ -727,7 +862,7 @@ void ProcessLineOld(void)
     {
         if      (strcmp(cmd, "help")   == 0) printf("commands: help, cls, reset\r\n");
         else if (strcmp(cmd, "cls")    == 0) printf("\033[2J\033[H>");
-        else if (strcmp(cmd, "reset")  == 0) NVIC_SystemReset();
+        else if (strcmp(cmd, "reset")  == 0) { printf("\033[2J\033[H"); HAL_Delay(50); NVIC_SystemReset(); }
         else if (strcmp(cmd, "uptime") == 0) printf("uptime: %lu ms\r\n", HAL_GetTick());
         else                                 printf("unknown command: %s\r\n", cmd);
     }
@@ -810,13 +945,21 @@ int main(void)
   Stepper_LoadParams();
   Stepper_Init(&htim2);
 
-  printf("\r\n\033[2J\033[H");
-  printf("========================================\r\n");
+  morse("V");
+
+  printf("\r\n========================================\r\n");
   printf("  stepper_sc  %s  %s\r\n", GIT_HASH, BUILD_DATE);
   printf("  STM32F411CEU6 @ 96 MHz\r\n");
   printf("  type 'help' for commands\r\n");
   printf("========================================\r\n");
+
+  Stepper_DumpParams();
+
+  morse("G");
+
   printf("> ");
+
+  MorseStart("Z");
 
   while (1)
   {
@@ -832,6 +975,15 @@ int main(void)
             ledTick = now;
             HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin);
         }
+    }
+
+    /* Non-blocking morse */
+    MorseUpdate();
+
+    /* Buzzer off after 50ms */
+    if (buzzActive && (HAL_GetTick() - buzzTick >= 50)) {
+        HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_SET);
+        buzzActive = 0;
     }
 
     /* Process button/endstop events from ISR */
@@ -1104,6 +1256,11 @@ static volatile uint32_t jogPressTickR = 0;
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     uint32_t now = HAL_GetTick();
+
+    /* Beep on any EXTI event — GPIO write is ISR-safe */
+    HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_RESET);
+    buzzTick = now;
+    buzzActive = 1;
 
     switch (GPIO_Pin)
     {
