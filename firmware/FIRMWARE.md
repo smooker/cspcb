@@ -231,6 +231,100 @@ cd firmware
 
 ![Pulseview capture](../docs/media/pulseview_capture.png)
 
+## Intercommunication: User ↔ Target ↔ Claude
+
+Three actors share the hardware: **User** (minicom on host), **Target** (STM32 firmware),
+**Claude** (chroot agent). Each has different access paths.
+
+### Topology
+
+```
+┌──────────┐   minicom    ┌──────────┐   GDB/SWD   ┌──────────┐
+│   User   │◄────────────►│  Target  │◄────────────►│  Claude  │
+│  (host)  │  ttyACMTarg  │ (STM32)  │  ttyACM0     │ (chroot) │
+└──────────┘   CDC r/w    └──────────┘  BMP probe   └──────────┘
+                               ▲                         │
+                               │    PULSE/DIR (PB10/14)  │
+                               └────────── FX2 ──────────┘
+                                      sigrok-cli
+```
+
+### Access summary
+
+| Resource       | User                          | Claude                            |
+|----------------|-------------------------------|-----------------------------------|
+| CDC serial     | minicom on `/dev/ttyACMTarg`  | GDB inject into RX ring buffer    |
+| Motor output   | Observes motor physically     | sigrok-cli via FX2 (D7=PULSE)     |
+| GDB debug      | `go_gdb.sh` (host terminal)   | `arm-none-eabi-gdb -nx -batch`    |
+| Flash firmware | Via Claude or `go_gdb.sh`     | `gdb -ex load` + AIRCR reset     |
+
+### GDB Command Injection (`inject_cmd.sh`)
+
+When the user has minicom open on the CDC port, Claude cannot write to it directly.
+Instead, Claude injects commands into the firmware's RX ring buffer via GDB memory writes.
+
+**Mechanism:**
+
+1. GDB attaches to target via BMP (halts CPU briefly ~100ms)
+2. Reads current `rxHead` index
+3. Writes command bytes into `UserRxBufferFS[rxHead..rxHead+len]`
+4. Appends CR (0x0D) for KEY_ENTER
+5. Updates `rxHead` — firmware sees `rxHead != rxTail` and processes
+6. GDB detaches — CPU resumes, main loop parses the command
+
+**Usage:**
+
+```bash
+cd firmware
+./inject_cmd.sh "mover 1"     # inject move command
+./inject_cmd.sh "params"      # inject params dump
+./inject_cmd.sh "stop"        # emergency stop
+```
+
+**Ring buffer details:**
+
+- Buffer: `UserRxBufferFS[512]` at `0x20000550`
+- Indices: `rxHead` (write), `rxTail` (read), both `uint16_t`, modulo 512
+- Both `\r` (0x0D) and `\n` (0x0A) trigger KEY_ENTER
+
+**Limitations:**
+
+- GDB halt pauses CPU for ~100ms — ongoing PWM pulses freeze during inject
+- USB CDC may disconnect/reconnect after GDB detach — minicom may need restart
+- Cannot read CDC output from Claude — user reports what they see on minicom
+
+### Workflow: Capture + Inject
+
+Typical test session with user on minicom and Claude on sigrok:
+
+```bash
+# Claude: start capture, inject command, analyze
+sigrok-cli -d fx2lafw -c samplerate=1M --time 3s -C D7 -o /tmp/test.sr &
+sleep 0.5
+./inject_cmd.sh "mover 1"
+wait
+sigrok-cli -i /tmp/test.sr -C D7 -O ascii | head -20
+
+# User: watches minicom for firmware response, reports back
+```
+
+### GDB Wire Test (connection verification)
+
+Before any sigrok capture, verify FX2 wiring by toggling GPIOs from GDB:
+
+1. Switch PB10 from TIM2 AF to GPIO output
+2. Set HIGH → read FX2 D7 (expect `0xBF`)
+3. Set LOW → read FX2 D7 (expect `0x3F`)
+4. Restore AF mode and detach
+
+See [FX2 Connection Test](#fx2-connection-test) above for full commands.
+
+### Heartbeat LED
+
+PC13 LED toggles every 500ms from main loop — visual confirmation that firmware
+is running and not stuck. If LED stops blinking, CPU is halted (GDB attached)
+or crashed (check Error_Handler which blinks fast at 50ms).
+
 ## Source Files
 
 | File | Description |
