@@ -102,6 +102,93 @@ GDB commands:
 
 SVD register inspection via PyCortexMDebug + STM32F411.svd.
 
+## FX2 Connection Test
+
+Verify wiring between Black Pill and FX2 Saleae Logic using GDB to toggle
+PULSE (PB10) and DIR (PB14), then reading the FX2 channels with sigrok.
+
+**Channel mapping**: D7 = PULSE (PB10), D6 = DIR (PB14).
+
+### GDB register reference
+
+GPIOB base: `0x40020400`
+
+| Offset | Register | Address      | Purpose          |
+|--------|----------|--------------|------------------|
+| 0x00   | MODER    | 0x40020400   | Pin mode (AF/GPIO/input) |
+| 0x14   | ODR      | 0x40020414   | Output data (read) |
+| 0x18   | BSRR     | 0x40020418   | Bit set/reset (write) |
+
+PB10 bits: MODER[21:20], BSRR set=bit10, BSRR reset=bit26
+PB14 bits: MODER[29:28], BSRR set=bit14, BSRR reset=bit30
+
+Original MODER value: `0x50200280` (PB10=AF, PB14=output)
+
+### Step-by-step connection test
+
+```bash
+# 1. Attach GDB and define peripheral memory region
+arm-none-eabi-gdb -ex "file build/stepper_sc.elf" \
+  -ex "target extended-remote /dev/ttyBmpGdb" \
+  -ex "monitor swdp_scan" \
+  -ex "attach 1" \
+  -ex "mem 0x40000000 0x50000000 rw"
+
+# 2. In GDB — switch PB10 from TIM2 AF to GPIO output
+#    MODER[21:20] = 01 (general purpose output)
+set *(uint32_t*)0x40020400 = (*(uint32_t*)0x40020400 & ~(3<<20)) | (1<<20)
+
+# 3. Set PB10 HIGH (BSRR bit 10)
+set *(uint32_t*)0x40020418 = (1<<10)
+
+# 4. Read FX2 — expect D7=1
+#    (run from another terminal)
+#    sigrok-cli -d fx2lafw -c samplerate=100K --channels D6,D7 --samples 100 -O ascii
+#    D7 should show '1' pattern, raw bytes = 0xBF
+
+# 5. Set PB10 LOW (BSRR bit 26)
+set *(uint32_t*)0x40020418 = (1<<26)
+
+# 6. Read FX2 — expect D7=0
+#    raw bytes = 0x3F
+
+# 7. Test DIR: set PB14 HIGH (BSRR bit 14)
+set *(uint32_t*)0x40020418 = (1<<14)
+
+# 8. Read FX2 — expect D6=1
+#    raw bytes = 0x7F (D6 high, D7 low)
+
+# 9. Set PB14 LOW (BSRR bit 30)
+set *(uint32_t*)0x40020418 = (1<<30)
+
+# 10. Restore PB10 to TIM2 AF mode and resume
+set *(uint32_t*)0x40020400 = 0x50200280
+continue
+detach
+```
+
+### Quick one-liner test (PB10 HIGH → capture → PB10 LOW)
+
+```bash
+# Set PB10 HIGH
+arm-none-eabi-gdb -batch -ex "file build/stepper_sc.elf" \
+  -ex "target extended-remote /dev/ttyBmpGdb" \
+  -ex "monitor swdp_scan" -ex "attach 1" \
+  -ex "mem 0x40000000 0x50000000 rw" \
+  -ex "set *(uint32_t*)0x40020400 = (0x50200280 & ~(3<<20)) | (1<<20)" \
+  -ex "set *(uint32_t*)0x40020418 = (1<<10)"
+
+# Read FX2 — D7 should be high (0xBF)
+sigrok-cli -d fx2lafw -c samplerate=100K --channels D6,D7 --samples 100 -O binary | xxd | head -1
+
+# Set PB10 LOW
+arm-none-eabi-gdb -batch -ex "file build/stepper_sc.elf" \
+  -ex "target extended-remote /dev/ttyBmpGdb" \
+  -ex "monitor swdp_scan" -ex "attach 1" \
+  -ex "mem 0x40000000 0x50000000 rw" \
+  -ex "set *(uint32_t*)0x40020418 = (1<<26)"
+```
+
 ## Logic Analyzer Capture (2026-03-13)
 
 FX2 Saleae Logic @ 1 MHz, 5M samples, `move 10` command (4000 pulses).
