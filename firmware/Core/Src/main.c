@@ -90,6 +90,9 @@ TIM_HandleTypeDef htim2;
 //Externs
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
+extern volatile int32_t  posSteps;
+extern volatile uint8_t  posHomed;
+
 volatile uint8_t diagMode = 0;
 volatile uint8_t buttonsEn = 0;   /* 0 = ignore button EXTI events — starts OFF, enabled after boot OK */
 volatile uint8_t endstopsEn = 1;  /* 0 = ignore endstop EXTI events */
@@ -97,7 +100,7 @@ volatile uint32_t buzzTick = 0;
 volatile uint8_t  buzzActive = 0;
 
 /* Non-blocking morse state machine */
-typedef enum { MRS_IDLE, MRS_TONE, MRS_INTER, MRS_LETTER } MorseState;
+typedef enum { MRS_IDLE, MRS_TONE, MRS_INTER, MRS_LETTER, MRS_LETTERGAP } MorseState;
 static MorseState mrsState = MRS_IDLE;
 static const char *mrsText = NULL;
 static uint8_t mrsCharIdx = 0;
@@ -178,7 +181,9 @@ static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void ProcessEvents(void);
+void RunHome(void);
 void RunCombo(void);
+void PrintPrompt(void);
 void MorseStart(const char *text);
 void MorseUpdate(void);
 uint8_t MorseIsBusy(void);
@@ -186,6 +191,16 @@ uint8_t MorseIsBusy(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+void PrintPrompt(void)
+{
+    if (posHomed) {
+        float mm = (float)posSteps / (float)motorParams.spmm.u;
+        printf("%8.2f > ", mm);
+    } else {
+        printf("XXXX.XX > ");
+    }
+}
 
 //
 KeyCode ParseKey(uint8_t byte)
@@ -463,11 +478,10 @@ void MorseUpdate(void)
             mrsSymIdx++;
             mrsTick = now;
             if (pattern[mrsSymIdx] == '\0') {
-                /* Letter done — inter-letter gap */
+                /* Letter done — inter-letter gap (3 dot times) */
                 mrsCharIdx++;
-                mrsState = MRS_LETTER;
-                /* Wait letterTime before next letter */
-                mrsTick = now - interTime + (3 * dotTime);  /* hack: make MRS_LETTER wait 3*dotTime */
+                mrsTick = now;
+                mrsState = MRS_LETTERGAP;
             } else {
                 mrsState = MRS_INTER;
             }
@@ -484,6 +498,16 @@ void MorseUpdate(void)
             mrsState = MRS_TONE;
         }
         break;
+    case MRS_LETTERGAP: {
+        /* Inter-letter gap: 3 dot times; word gap (space): 7 dot times */
+        uint32_t gap = 3 * dotTime;
+        if (mrsText[mrsCharIdx] == ' ') gap = 7 * dotTime;
+        if (elapsed >= gap) {
+            if (mrsText[mrsCharIdx] == ' ') mrsCharIdx++;  /* skip the space */
+            mrsState = MRS_LETTER;
+        }
+        break;
+    }
     case MRS_IDLE:
     default:
         break;
@@ -782,7 +806,7 @@ void ProcessLine(void)
         else if (strcmp(cmd, "params") == 0) Stepper_DumpParams();
         else if (strcmp(cmd, "save")   == 0) Stepper_SaveParams();
         else if (strcmp(cmd, "dump")   == 0) dumpVars();
-        else if (strcmp(cmd, "cls")    == 0) printf("\033[2J\033[H>");
+        else if (strcmp(cmd, "cls")    == 0) { printf("\033[2J\033[H"); PrintPrompt(); }
         else if (strcmp(cmd, "uptime") == 0) printf("uptime: %lu ms\r\n", HAL_GetTick());
         else if (strcmp(cmd, "reset")  == 0) { printf("\033[2J\033[H"); HAL_Delay(50); NVIC_SystemReset(); }
         else if (strcmp(cmd, "diag_inputs") == 0 || strcmp(cmd, "di") == 0) {
@@ -790,6 +814,14 @@ void ProcessLine(void)
             printf("diag_inputs %s\r\n", diagMode ? "ON" : "OFF");
         }
         else if (strcmp(cmd, "combo")  == 0) RunCombo();
+        else if (strcmp(cmd, "home")   == 0) RunHome();
+        else if (strncmp((char *)lineBuf, "morse ", 6) == 0) {
+            static char morseBuf[64];
+            strncpy(morseBuf, (char *)lineBuf + 6, sizeof(morseBuf) - 1);
+            morseBuf[sizeof(morseBuf) - 1] = '\0';
+            MorseStart(morseBuf);
+            printf("morse: %s\r\n", morseBuf);
+        }
         else if (strcmp((char *)lineBuf, "buttons on")  == 0) { buttonsEn = 1; printf("buttons ON\r\n"); }
         else if (strcmp((char *)lineBuf, "buttons off") == 0) { buttonsEn = 0; printf("buttons OFF\r\n"); }
         else if (strcmp((char *)lineBuf, "endstops on")  == 0) { endstopsEn = 1; printf("endstops ON\r\n"); }
@@ -871,7 +903,7 @@ void ProcessLineOld(void)
     else if (sscanf((char *)lineBuf, "%s", cmd) == 1)
     {
         if      (strcmp(cmd, "help")   == 0) printf("commands: help, cls, reset\r\n");
-        else if (strcmp(cmd, "cls")    == 0) printf("\033[2J\033[H>");
+        else if (strcmp(cmd, "cls")    == 0) { printf("\033[2J\033[H"); PrintPrompt(); }
         else if (strcmp(cmd, "reset")  == 0) { printf("\033[2J\033[H"); HAL_Delay(50); NVIC_SystemReset(); }
         else if (strcmp(cmd, "uptime") == 0) printf("uptime: %lu ms\r\n", HAL_GetTick());
         else                                 printf("unknown command: %s\r\n", cmd);
@@ -968,7 +1000,7 @@ int main(void)
 
   morse("G");
 
-  printf("> ");
+  PrintPrompt();
 
   /* Flush any bytes minicom sent during boot (init strings, ESC queries) */
   rxHead = 0;
@@ -1034,7 +1066,7 @@ int main(void)
             if (HAL_GetTick() - bootTick >= 2000) bootPhase = 2;
             break;
         case 5: /* wait OK to finish */
-            if (!MorseIsBusy()) { buttonsEn = 1; printf("\r\nbuttons enabled\r\n> "); bootPhase = 6; }
+            if (!MorseIsBusy()) { buttonsEn = 1; printf("\r\nbuttons enabled\r\n"); PrintPrompt(); bootPhase = 6; }
             break;
         default: break;
         }
@@ -1082,7 +1114,7 @@ int main(void)
                 ProcessLine();
                 lineLen = 0;
             }
-            printf("> ");
+            PrintPrompt();
             break;
         case KEY_BACKSPACE:
             if (lineLen > 0)
@@ -1391,6 +1423,84 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 }
 
+/* Homing: approach ES_L at homespd CCW, backoff at mmpsmin CW until release, +1mm */
+void RunHome(void)
+{
+    float savedMax = motorParams.mmpsmax.f;
+    float savedMin = motorParams.mmpsmin.f;
+
+    /* Phase 1: approach ES_L at homespd (CCW), polling with debounce */
+    printf("home: approach ES_L @ %.1f mm/s CCW\r\n", motorParams.homespd.f);
+    endstopsEn = 0;  /* ignore EXTI — we poll manually to avoid EMI false triggers */
+    buttonsEn = 0;
+    motorParams.mmpsmax.f = motorParams.homespd.f;
+    Stepper_Move(-9999.0f);  /* long CCW move */
+    while (Stepper_IsBusy()) {
+        /* debounced poll: ES_L must read LOW 10 times in a row (50ms) */
+        uint8_t lowCount = 0;
+        while (lowCount < 10 && Stepper_IsBusy()) {
+            if (HAL_GPIO_ReadPin(ES_L_GPIO_Port, ES_L_Pin) == GPIO_PIN_RESET)
+                lowCount++;
+            else
+                lowCount = 0;
+            HAL_Delay(5);
+        }
+        if (lowCount >= 10) {
+            Stepper_Stop();
+            while (Stepper_IsBusy()) { HAL_Delay(10); }
+            break;
+        }
+    }
+    printf("home: ES_L confirmed, settling...\r\n");
+
+    /* Phase 2: settle — wait for vibrations */
+    HAL_Delay(500);
+
+    /* Phase 3: backoff at homespd/10 (CW) until ES_L releases (debounced) */
+    float backoffSpd = motorParams.homespd.f / 10.0f;
+    if (backoffSpd < 0.1f) backoffSpd = 0.1f;
+    printf("home: backoff @ %.2f mm/s CW\r\n", backoffSpd);
+    motorParams.mmpsmax.f = backoffSpd;
+    motorParams.mmpsmin.f = backoffSpd;  /* no ramp — constant slow speed */
+    endstopsEn = 0;  /* don't let ES_L re-trigger during backoff */
+    Stepper_Move(9999.0f);  /* long CW move */
+    while (Stepper_IsBusy()) {
+        /* debounced poll: ES_L must read HIGH 10 times in a row (50ms) */
+        uint8_t highCount = 0;
+        while (highCount < 10 && Stepper_IsBusy()) {
+            if (HAL_GPIO_ReadPin(ES_L_GPIO_Port, ES_L_Pin) == GPIO_PIN_SET)
+                highCount++;
+            else
+                highCount = 0;
+            HAL_Delay(5);
+        }
+        if (highCount >= 10) {
+            Stepper_Stop();
+            while (Stepper_IsBusy()) { HAL_Delay(10); }
+            break;
+        }
+    }
+    printf("home: ES_L released, +%lu steps CW\r\n", motorParams.homeoff.u);
+
+    /* Phase 4: move homeoff steps CW away from switch */
+    HAL_Delay(200);
+    Stepper_MoveSteps((int32_t)motorParams.homeoff.u);
+    while (Stepper_IsBusy()) {
+        HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin);
+        HAL_Delay(50);
+    }
+
+    /* Set home position */
+    posSteps = 0;
+    posHomed = 1;
+
+    /* Restore speed and endstops */
+    motorParams.mmpsmax.f = savedMax;
+    motorParams.mmpsmin.f = savedMin;
+    endstopsEn = 1;
+    printf("home: done\r\n");
+}
+
 /* Combo test: 4 moves with wait between each */
 void RunCombo(void)
 {
@@ -1425,46 +1535,46 @@ void ProcessEvents(void)
 
     /* ---- Endstops ---- */
     if (flags & EVT_ES_L) {
-        printf("ES_L hit\r\n> ");
+        printf("ES_L hit\r\n"); PrintPrompt();
         jogStateL = JOG_IDLE;
         jogStateR = JOG_IDLE;
     }
     if (flags & EVT_ES_R) {
-        printf("ES_R hit\r\n> ");
+        printf("ES_R hit\r\n"); PrintPrompt();
         jogStateL = JOG_IDLE;
         jogStateR = JOG_IDLE;
     }
 
     /* ---- Jog Left ---- */
     if (flags & EVT_JOGL_DN) {
-        if (diagMode) { printf("JOGL_DN\r\n> "); }
+        if (diagMode) { printf("JOGL_DN\r\n"); PrintPrompt(); }
         else {
             jogStateL = JOG_PRESSED;
             Stepper_Jog(-1.0f);   /* immediate short jog */
         }
     }
     if (flags & EVT_JOGL_UP) {
-        if (diagMode) { printf("JOGL_UP\r\n> "); }
+        if (diagMode) { printf("JOGL_UP\r\n"); PrintPrompt(); }
         else if (jogStateL == JOG_CONT) {
             Stepper_Stop();
-            printf("jog L stop\r\n> ");
+            printf("jog L stop\r\n"); PrintPrompt();
         }
         jogStateL = JOG_IDLE;
     }
 
     /* ---- Jog Right ---- */
     if (flags & EVT_JOGR_DN) {
-        if (diagMode) { printf("JOGR_DN\r\n> "); }
+        if (diagMode) { printf("JOGR_DN\r\n"); PrintPrompt(); }
         else {
             jogStateR = JOG_PRESSED;
             Stepper_Jog(1.0f);    /* immediate short jog */
         }
     }
     if (flags & EVT_JOGR_UP) {
-        if (diagMode) { printf("JOGR_UP\r\n> "); }
+        if (diagMode) { printf("JOGR_UP\r\n"); PrintPrompt(); }
         else if (jogStateR == JOG_CONT) {
             Stepper_Stop();
-            printf("jog R stop\r\n> ");
+            printf("jog R stop\r\n"); PrintPrompt();
         }
         jogStateR = JOG_IDLE;
     }
@@ -1485,11 +1595,11 @@ void ProcessEvents(void)
 
     /* ---- Step buttons ---- */
     if (flags & EVT_STEPL) {
-        if (diagMode) printf("BUTT_STEPL\r\n> ");
+        if (diagMode) { printf("BUTT_STEPL\r\n"); PrintPrompt(); }
         else          Stepper_Move(-motorParams.stepmm.f);
     }
     if (flags & EVT_STEPR) {
-        if (diagMode) printf("BUTT_STEPR\r\n> ");
+        if (diagMode) { printf("BUTT_STEPR\r\n"); PrintPrompt(); }
         else          Stepper_Move(motorParams.stepmm.f);
     }
 }

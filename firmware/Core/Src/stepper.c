@@ -34,6 +34,11 @@ static volatile int32_t decelCount = 0;
 static volatile int32_t accelIndex = 0;
 static volatile int32_t decelIndex = 0;
 
+/* ---- Absolute position tracking ----------------------------------- */
+volatile int32_t  posSteps = 0;     /* current position in steps */
+volatile uint8_t  posHomed = 0;     /* 1 = homed, 0 = unknown position */
+static volatile int8_t moveDir = 1; /* +1 or -1, set before each move */
+
 /* ---- Ramp tables -------------------------------------------------- */
 static uint32_t accelTable[MAX_RAMP_STEPS];
 static uint32_t decelTable[MAX_RAMP_STEPS];
@@ -113,6 +118,12 @@ void Stepper_LoadParams(void)
 
     if (EEPROM_Read(EE_ADDR_DIRINV,   &val) == EEPROM_OK) motorParams.dirinv.u   = val;
     else motorParams.dirinv.u   = 0;
+
+    if (EEPROM_Read(EE_ADDR_HOMESPD,  &val) == EEPROM_OK) motorParams.homespd.u  = val;
+    else motorParams.homespd.f  = DEFAULT_HOMESPD;
+
+    if (EEPROM_Read(EE_ADDR_HOMEOFF,  &val) == EEPROM_OK) motorParams.homeoff.u  = val;
+    else motorParams.homeoff.u  = DEFAULT_HOMEOFF;
 }
 
 void Stepper_SaveParams(void)
@@ -125,6 +136,8 @@ void Stepper_SaveParams(void)
     EEPROM_Write(EE_ADDR_STEPMM,   motorParams.stepmm.u);
     EEPROM_Write(EE_ADDR_SPMM,     motorParams.spmm.u);
     EEPROM_Write(EE_ADDR_DIRINV,   motorParams.dirinv.u);
+    EEPROM_Write(EE_ADDR_HOMESPD,  motorParams.homespd.u);
+    EEPROM_Write(EE_ADDR_HOMEOFF,  motorParams.homeoff.u);
     printf("params saved\r\n");
 }
 
@@ -140,6 +153,8 @@ void Stepper_DumpParams(void)
     printf("  spmm...........: %7lu steps/mm\r\n", motorParams.spmm.u);
     printf("  dirinv.........: %7lu %s\r\n", motorParams.dirinv.u,
               motorParams.dirinv.u ? "(inverted)" : "(normal)");
+    printf("  homespd........: %7.3f mm/s\r\n", motorParams.homespd.f);
+    printf("  homeoff........: %7lu steps\r\n", motorParams.homeoff.u);
     printf("-----------------------------------------------\r\n");
     printf("  pulse_ticks....: %lu\r\n", (uint32_t)PULSE_TICKS);
     printf("  min_period.....: %lu ticks (%.1f mm/s)\r\n",
@@ -159,6 +174,8 @@ void Stepper_SetParam(const char *name, float value)
     else if (strcmp(name, "stepmm")   == 0) motorParams.stepmm.f   = value;
     else if (strcmp(name, "spmm")     == 0) motorParams.spmm.u     = (uint32_t)value;
     else if (strcmp(name, "dirinv")   == 0) motorParams.dirinv.u   = (uint32_t)value;
+    else if (strcmp(name, "homespd")  == 0) motorParams.homespd.f  = value;
+    else if (strcmp(name, "homeoff")  == 0) motorParams.homeoff.u  = (uint32_t)value;
     else { printf("unknown param: %s\r\n", name); return; }
     printf("%s = %.3f\r\n", name, value);
 }
@@ -201,6 +218,7 @@ static void StartMove(int32_t steps)
     uint32_t t = HAL_GetTick();
     while (HAL_GetTick() == t);
 
+    moveDir        = (steps > 0) ? 1 : -1;
     stepsRemaining = ABS(steps);
     stepCount      = 0;
     decelCount     = 0;
@@ -299,6 +317,7 @@ void Stepper_RunContinuous(int8_t dir)
     uint32_t t = HAL_GetTick();
     while (HAL_GetTick() == t);
 
+    moveDir        = (dir > 0) ? 1 : -1;
     stepsRemaining = 0x7FFFFFFF;   /* run "forever" */
     stepCount      = 0;
     decelCount     = 0;
@@ -356,6 +375,7 @@ void Stepper_ISR(void)
 
     stepsRemaining--;
     stepCount++;
+    posSteps += moveDir;  /* track absolute position */
 
     if (stepsRemaining == 0)
     {

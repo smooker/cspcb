@@ -4,15 +4,16 @@
 
 1. Power on / reset (`reset` command clears screen first)
 2. Buzzer plays **V** (morse: `...-`) — blocking
-3. Boot banner with git hash and build date
+3. Clear screen + boot banner with git hash and build date
 4. Parameter dump (from EEPROM)
 5. Buzzer plays **G** (morse: `--.`) — blocking
 6. Prompt `>` appears — CDC commands work from here
-7. Buzzer plays **Z** (morse: `--..`) — non-blocking, you can type during it
-8. **3 second delay** — buttons disabled, endstops active
-9. **Input self-test** — reads all 6 inputs (4 buttons + 2 endstops)
-   - All clear → buzzer plays **OK** (morse: `--- -.-`) → buttons enabled → system ready
-   - Any input stuck LOW → prints which input is stuck (e.g. `STUCK: ES_L`) → buzzer plays **CQ CQ CQ DE LZ1CCM** → 2s pause → re-checks → repeats until fault cleared
+7. RX buffer flush (discards any minicom init strings)
+8. Buzzer plays **Z** (morse: `--..`) — non-blocking, you can type during it
+9. **3 second delay** — buttons disabled, endstops active
+10. **Input self-test** — reads all 6 inputs (4 buttons + 2 endstops)
+    - All clear → buzzer plays **OK** (morse: `--- -.-`) → buttons enabled → system ready
+    - Any input stuck LOW → prints which input is stuck (e.g. `STUCK: ES_L`) → buzzer plays **CQ CQ CQ DE LZ1CCM** → 2s pause → re-checks → repeats until fault cleared
 
 ### Input Self-Test Fault Loop
 
@@ -31,11 +32,22 @@ Connect via serial terminal (minicom, screen, etc.) at any baud rate (USB CDC).
 
 | Command | Description | Parameter |
 |---------|-------------|-----------|
-| `mover <mm>` | Move right (positive) | distance in mm |
-| `movel <mm>` | Move left (negative) | distance in mm |
-| `move <mm>` | Move by signed distance | + = right, - = left |
+| `mover <mm>` | Move CW (positive) | distance in mm |
+| `movel <mm>` | Move CCW (negative) | distance in mm |
+| `move <mm>` | Move by signed distance | + = CW, - = CCW |
 | `steps <n>` | Move by raw step count | signed integer |
 | `stop` | Decelerate and stop | — |
+| `home` | Homing procedure — find ES_L, backoff, park | — |
+
+### Homing Procedure (`home`)
+
+1. **Approach** ES_L at `homespd` mm/s CCW — debounced polling (10×5ms LOW)
+2. **Settle** 500ms — wait for mechanical vibrations
+3. **Backoff** at `homespd/10` mm/s CW — debounced polling (10×5ms HIGH)
+4. **Park** `homeoff` steps CW from switch edge (default 400)
+
+EXTI endstops are disabled during homing — uses GPIO polling with debounce
+to avoid EMI false triggers.
 
 ### Parameters
 
@@ -48,6 +60,9 @@ Connect via serial terminal (minicom, screen, etc.) at any baud rate (USB CDC).
 | `set jogmm <f>` | Jog distance (mm) — used by jog buttons |
 | `set stepmm <f>` | Step distance (mm) — used by step buttons |
 | `set spmm <n>` | Steps per mm — depends on driver microstepping and lead screw pitch |
+| `set dirinv <0/1>` | Invert DIR pin — compensates for optocoupled driver polarity |
+| `set homespd <f>` | Homing approach speed (mm/s) — backoff is 1/10 of this |
+| `set homeoff <n>` | Homing offset from switch (steps) — park distance after backoff |
 | `params` | Show all current parameters |
 | `save` | Save parameters to EEPROM (persists across resets) |
 
@@ -59,6 +74,12 @@ Connect via serial terminal (minicom, screen, etc.) at any baud rate (USB CDC).
 | `buttons off` | Disable button inputs — EXTI events ignored |
 | `endstops on` | Enable endstop inputs (default always on) |
 | `endstops off` | Disable endstop inputs — **use with caution** |
+
+### Morse
+
+| Command | Description |
+|---------|-------------|
+| `morse <text>` | Play text in morse code — non-blocking, letters + digits + spaces |
 
 ### Diagnostics
 
@@ -76,13 +97,14 @@ Connect via serial terminal (minicom, screen, etc.) at any baud rate (USB CDC).
 ## Physical Buttons
 
 Active low (pulled up internally, press connects to GND).
+Buttons start **disabled** at boot — enabled after input self-test passes (morse OK).
 
 | Button | Pin | Short Press | Long Hold (>300ms) |
 |--------|-----|-------------|---------------------|
-| JOG L | PA6 | Jog left by `jogmm` with ramps | Continuous left at `mmpsmax` until release |
-| JOG R | PA7 | Jog right by `jogmm` with ramps | Continuous right at `mmpsmax` until release |
-| STEP L | PB0 | Move left by `stepmm` with ramps | — |
-| STEP R | PB1 | Move right by `stepmm` with ramps | — |
+| JOG L | PA6 | Jog CCW by `jogmm` with ramps | Continuous CCW at `mmpsmax` until release |
+| JOG R | PA7 | Jog CW by `jogmm` with ramps | Continuous CW at `mmpsmax` until release |
+| STEP L | PB0 | Move CCW by `stepmm` with ramps | — |
+| STEP R | PB1 | Move CW by `stepmm` with ramps | — |
 
 ## Endstops
 
@@ -93,18 +115,21 @@ Active low (pulled up internally, press connects to GND).
 
 Endstops have **no software debounce** in normal mode (safety first).
 In `diag_inputs` mode, endstops have 30ms debounce and only print — no stop.
+During `home`, EXTI endstops are disabled — GPIO polling with debounce is used instead.
 
 ## Buzzer
 
 Self-oscillating buzzer on PB15 (active low).
 
-- **Boot**: morse V-G-Z sequence
+- **Boot**: morse V → G → Z → (3s) → OK sequence
+- **Boot fault**: CQ CQ CQ DE LZ1CCM loop if inputs stuck
 - **Button/endstop press**: 50ms beep on any EXTI event
-- **Morse functions**: `dot()` / `dash()` available for custom sequences
+- **`morse` command**: arbitrary text playback, non-blocking
 
 ## LED (PC13)
 
 - **Normal**: toggles every 500ms (1Hz heartbeat) — confirms main loop is running
+- **Homing/combo**: fast toggle 50ms — indicates blocking operation in progress
 - **Error handler**: fast blink 50ms — indicates crash
 - **GDB attached**: LED frozen — CPU halted
 - **Morse**: blinks in sync with buzzer during boot sequence
@@ -122,9 +147,13 @@ Trapezoidal/triangular velocity profile with configurable acceleration and decel
 Parameters persist across power cycles. Stored in internal flash (sectors 6 & 7)
 with wear-leveling. Use `save` command after changing parameters.
 
+9 parameters stored: mmpsmax, mmpsmin, dvdtacc, dvdtdecc, jogmm, stepmm, spmm, dirinv, homespd.
+
 ## Safety Notes
 
 - `diag_outputs` is password protected — moves motor without ramps at constant speed
 - Endstops always active in normal mode (no debounce, immediate stop)
 - `stop` command triggers smooth deceleration from any state
-- EMI from stepper driver can cause false button/endstop triggers without hardware filtering (external pull-ups + caps recommended)
+- Homing uses debounced GPIO polling (not EXTI) to avoid EMI false triggers
+- EMI from solar inverters / stepper drivers can cause false button/endstop triggers without hardware filtering (external pull-ups + caps recommended on PCB)
+- Buttons disabled at boot until input self-test passes

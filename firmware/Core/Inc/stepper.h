@@ -17,6 +17,11 @@
 #define EE_ADDR_STEPMM      6
 #define EE_ADDR_SPMM        7
 #define EE_ADDR_DIRINV      8
+#define EE_ADDR_HOMESPD     9
+#define EE_ADDR_HOMEOFF     10
+
+#define DEFAULT_HOMESPD     1.0f    /* mm/s     */
+#define DEFAULT_HOMEOFF     400UL   /* steps    */
 
 /* ---- Timer clock --------------------------------------------------- */
 #define STEPPER_TIM_CLOCK   96000000UL          /* 96MHz                */

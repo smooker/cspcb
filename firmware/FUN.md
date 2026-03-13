@@ -75,3 +75,18 @@ User (minicom) ←→ Target (STM32) ←→ Claude (GDB + sigrok)
 User watches the terminal. Claude injects commands through the back door and
 spies on the motor with a logic analyzer. Target has no idea who's talking to it.
 The firmware equivalent of a group chat where one person is a ghost.
+
+## Solar EMI: нощна смяна без смущения
+
+After hours of debugging phantom endstop hits and ghost button presses, we blamed
+the stepper driver, the wires, the weak 40kΩ pull-ups... Then smooker noticed:
+the buzzer only squeals when passing through the endstop switches, not during
+movement. And the false triggers happen all day.
+
+The EMI source? **Solar inverters.** The whole house is powered by solar panels
+with switching inverters pumping noise into every wire.
+
+> "понеже имаме много хубави соларни инвертори, и слънцето почна да залязва,
+> ако останем нощна смяна - ще работим без EMI! ;)"
+
+The ultimate hardware fix: wait for sunset.

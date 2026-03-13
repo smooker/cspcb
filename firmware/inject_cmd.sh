@@ -13,7 +13,10 @@ fi
 TMPGDB=$(mktemp /tmp/gdb_inject.XXXXXX)
 
 cat > "$TMPGDB" <<'HEADER'
-set $h = rxHead
+set rxHead = 0
+set rxTail = 0
+set lineLen = 0
+set $h = 0
 set $buf = (uint8_t *)&UserRxBufferFS
 HEADER
 
