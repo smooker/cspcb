@@ -189,30 +189,47 @@ arm-none-eabi-gdb -batch -ex "file build/stepper_sc.elf" \
   -ex "set *(uint32_t*)0x40020418 = (1<<26)"
 ```
 
-## Logic Analyzer Capture (2026-03-13)
+## Logic Analyzer Captures (2026-03-13)
 
-FX2 Saleae Logic @ 1 MHz, 5M samples, `move 10` command (4000 pulses).
+FX2 Saleae Logic, channels D6 (DIR) + D7 (PULSE), 100 kHz sample rate.
 
-**Channel mapping**: D7 = PULSE (PB10). D0-D6 static high. DIR (PB14) not connected to FX2.
+**Channel mapping**: D7 = PULSE (PB10), D6 = DIR (PB14).
 
-### Measured ramp profile
+### Decel bug (FIXED)
+
+Before fix: CONST->DECEL set `decelIndex = 0` (slow end of table).
+Result: instant 10x speed drop at pulse 3604 (240->2400 us), no ramp.
+Fix: `decelIndex = decelSize - 1` (fast end), smooth symmetric decel.
+
+### Measured ramp profile (after fix, `move 5` = 2000 pulses)
 
 | Phase | Pulses | Period range | Freq range | Steps |
 |-------|--------|-------------|------------|-------|
-| Accel | 0–393 | 2147→240 µs | 466→4167 Hz | 394 |
-| Const | 394–3603 | 240 µs | 4167 Hz | 3210 |
-| Decel | 3604–3999 | 2400 µs (flat) | 417 Hz | 396 |
+| Accel | 0-370 | 2140->240 us | 467->4167 Hz | 371 |
+| Const | 371-1629 | 240 us | 4167 Hz | 1259 |
+| Decel | 1630-1999 | 240->1960 us | 4167->510 Hz | 370 |
 
-### BUG: No deceleration ramp
+Accel/decel are symmetric (371 vs 370 steps).
 
-At pulse 3604, period jumps instantly from 240 µs to 2400 µs (10× speed drop).
-The motor goes from full speed to near-minimum speed in one step, then crawls.
+### Capture files
 
-**Root cause** (stepper.c, CONST→DECEL transition): `decelIndex = 0` starts at the slow
-end of decelTable (index 0 = maxPeriod). Should be `decelIndex = decelSize - 1` to start
-from the fast end and ramp down symmetrically to accel.
+| File | Contents |
+|------|----------|
+| `capture_all.sr` | Pre-fix, 1 MHz, `move 10`, shows decel bug |
+| `capture_both.sr` | Post-fix, 100 kHz, `mover 5` + `movel 5`, both directions |
+| `capture_both_speed.sr` | Same + computed speed analog channel (mm/s) |
+| `capture_both.pvs` | Pulseview session: edge counter + stepper_motor decoders |
+| `capture_both_speed.pvs` | Same + analog speed trace, 64px traces |
 
-**Capture file**: `capture_all.sr` in project root.
+### Viewing
+
+```bash
+cd firmware
+./go.sh view                        # open capture_both_speed.sr in pulseview
+./go.sh speed ../capture_both.sr    # generate speed channel + view
+```
+
+![Pulseview capture](../doc/pulseview_capture.png)
 
 ## Source Files
 
