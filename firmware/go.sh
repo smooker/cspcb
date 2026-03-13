@@ -79,10 +79,21 @@ meta = z.read('metadata').decode()
 samplerate = 100000
 for line in meta.split('\n'):
     if line.startswith('samplerate='):
-        samplerate = int(line.split('=')[1].strip())
+        s = line.split('=')[1].strip()
+        # Handle "100 kHz", "1 MHz", or plain "100000"
+        s = s.replace(' ', '')
+        if s.lower().endswith('khz'):
+            samplerate = int(float(s[:-3]) * 1000)
+        elif s.lower().endswith('mhz'):
+            samplerate = int(float(s[:-3]) * 1000000)
+        elif s.lower().endswith('hz'):
+            samplerate = int(float(s[:-2]))
+        else:
+            samplerate = int(s)
 
 speed = [0.0] * len(raw)
 prev_rising = None
+last_period = None
 prev_d7 = raw[0] & 0x80
 current_speed = 0.0
 
@@ -91,20 +102,23 @@ for i in range(1, len(raw)):
     d6 = raw[i] & 0x40
     if d7 and not prev_d7:
         if prev_rising is not None:
-            period = i - prev_rising
-            freq = samplerate / period
+            last_period = i - prev_rising
+            freq = samplerate / last_period
             current_speed = freq / spm
             if not d6:
                 current_speed = -current_speed
         prev_rising = i
-    if prev_rising is not None and (i - prev_rising) > samplerate * 0.1:
-        current_speed = 0.0
+    # Drop speed to zero if no pulse within 2x last period
+    if prev_rising is not None and last_period is not None:
+        if (i - prev_rising) > last_period * 2:
+            current_speed = 0.0
     speed[i] = current_speed
     prev_d7 = d7
 
 speed_data = struct.pack(f'<{len(speed)}f', *speed)
 
 new_meta = meta.rstrip() + '\n'
+new_meta = new_meta.replace('total analog=0', 'total analog=1\nanalog9=Speed mm/s')
 if 'total analog' not in new_meta:
     new_meta = new_meta.replace('unitsize=1', 'total analog=1\nanalog9=Speed mm/s\nunitsize=1')
 
