@@ -229,7 +229,7 @@ cd firmware
 ./go.sh speed ../capture_both.sr    # generate speed channel + view
 ```
 
-![Pulseview capture](../doc/pulseview_capture.png)
+![Pulseview capture](../docs/media/pulseview_capture.png)
 
 ## Source Files
 
