@@ -165,7 +165,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
-
+void ProcessEvents(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -817,6 +817,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+    /* Process button/endstop events from ISR */
+    ProcessEvents();
+
     /* Drain RX buffer */
     while (CDC_RxAvailable())
     {
@@ -1046,13 +1049,23 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-/* ---- Button debounce (30 ms) ------------------------------------------ */
+/* ---- Button/endstop event flags (set in ISR, processed in main) ------- */
 #define DEBOUNCE_MS  30
 
+#define EVT_ES_L      (1U << 0)
+#define EVT_ES_R      (1U << 1)
+#define EVT_JOGL      (1U << 2)
+#define EVT_JOGR      (1U << 3)
+#define EVT_STEPL     (1U << 4)
+#define EVT_STEPR     (1U << 5)
+
+static volatile uint32_t evtFlags = 0;
 static volatile uint32_t lastTick_jogL  = 0;
 static volatile uint32_t lastTick_jogR  = 0;
 static volatile uint32_t lastTick_stepL = 0;
 static volatile uint32_t lastTick_stepR = 0;
+static volatile uint32_t lastTick_esL   = 0;
+static volatile uint32_t lastTick_esR   = 0;
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
@@ -1060,52 +1073,85 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
     switch (GPIO_Pin)
     {
-    /* ---- Endstops: immediate, no debounce ---- */
+    /* ---- Endstops: immediate stop, debounce in diag mode ---- */
     case ES_L_Pin:
-        if (!diagMode) Stepper_Stop();
-        printf("ES_L hit\r\n");
+        if (!diagMode) { Stepper_Stop(); evtFlags |= EVT_ES_L; }
+        else if (now - lastTick_esL >= DEBOUNCE_MS) {
+            lastTick_esL = now;
+            evtFlags |= EVT_ES_L;
+        }
         break;
 
     case ES_R_Pin:
-        if (!diagMode) Stepper_Stop();
-        printf("ES_R hit\r\n");
+        if (!diagMode) { Stepper_Stop(); evtFlags |= EVT_ES_R; }
+        else if (now - lastTick_esR >= DEBOUNCE_MS) {
+            lastTick_esR = now;
+            evtFlags |= EVT_ES_R;
+        }
         break;
 
-    /* ---- Buttons: 30 ms debounce (skipped in diag mode) ---- */
+    /* ---- Buttons: 30 ms debounce ---- */
     case BUTT_JOGL_Pin:
-        if (diagMode) { printf("BUTT_JOGL\r\n"); break; }
         if (now - lastTick_jogL >= DEBOUNCE_MS) {
             lastTick_jogL = now;
-            Stepper_Jog(-1.0f);
+            evtFlags |= EVT_JOGL;
         }
         break;
 
     case BUTT_JOGR_Pin:
-        if (diagMode) { printf("BUTT_JOGR\r\n"); break; }
         if (now - lastTick_jogR >= DEBOUNCE_MS) {
             lastTick_jogR = now;
-            Stepper_Jog(1.0f);
+            evtFlags |= EVT_JOGR;
         }
         break;
 
     case BUTT_STEPL_Pin:
-        if (diagMode) { printf("BUTT_STEPL\r\n"); break; }
         if (now - lastTick_stepL >= DEBOUNCE_MS) {
             lastTick_stepL = now;
-            Stepper_Move(-motorParams.stepmm.f);
+            evtFlags |= EVT_STEPL;
         }
         break;
 
     case BUTT_STEPR_Pin:
-        if (diagMode) { printf("BUTT_STEPR\r\n"); break; }
         if (now - lastTick_stepR >= DEBOUNCE_MS) {
             lastTick_stepR = now;
-            Stepper_Move(motorParams.stepmm.f);
+            evtFlags |= EVT_STEPR;
         }
         break;
 
     default:
         break;
+    }
+}
+
+/* Called from main loop — safe to printf here */
+void ProcessEvents(void)
+{
+    uint32_t flags = evtFlags;
+    if (!flags) return;
+    evtFlags = 0;
+
+    if (flags & EVT_ES_L) {
+        printf("ES_L hit\r\n> ");
+    }
+    if (flags & EVT_ES_R) {
+        printf("ES_R hit\r\n> ");
+    }
+    if (flags & EVT_JOGL) {
+        if (diagMode) printf("BUTT_JOGL\r\n> ");
+        else          Stepper_Jog(-1.0f);
+    }
+    if (flags & EVT_JOGR) {
+        if (diagMode) printf("BUTT_JOGR\r\n> ");
+        else          Stepper_Jog(1.0f);
+    }
+    if (flags & EVT_STEPL) {
+        if (diagMode) printf("BUTT_STEPL\r\n> ");
+        else          Stepper_Move(-motorParams.stepmm.f);
+    }
+    if (flags & EVT_STEPR) {
+        if (diagMode) printf("BUTT_STEPR\r\n> ");
+        else          Stepper_Move(motorParams.stepmm.f);
     }
 }
 
