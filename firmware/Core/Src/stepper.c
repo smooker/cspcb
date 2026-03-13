@@ -124,6 +124,9 @@ void Stepper_LoadParams(void)
 
     if (EEPROM_Read(EE_ADDR_HOMEOFF,  &val) == EEPROM_OK) motorParams.homeoff.u  = val;
     else motorParams.homeoff.u  = DEFAULT_HOMEOFF;
+
+    if (EEPROM_Read(EE_ADDR_DEBUG,   &val) == EEPROM_OK) motorParams.debug.u   = val;
+    else motorParams.debug.u   = DEFAULT_DEBUG;
 }
 
 void Stepper_SaveParams(void)
@@ -138,6 +141,7 @@ void Stepper_SaveParams(void)
     EEPROM_Write(EE_ADDR_DIRINV,   motorParams.dirinv.u);
     EEPROM_Write(EE_ADDR_HOMESPD,  motorParams.homespd.u);
     EEPROM_Write(EE_ADDR_HOMEOFF,  motorParams.homeoff.u);
+    EEPROM_Write(EE_ADDR_DEBUG,    motorParams.debug.u);
     printf("params saved\r\n");
 }
 
@@ -155,6 +159,7 @@ void Stepper_DumpParams(void)
               motorParams.dirinv.u ? "(inverted)" : "(normal)");
     printf("  homespd........: %7.3f mm/s\r\n", motorParams.homespd.f);
     printf("  homeoff........: %7lu steps\r\n", motorParams.homeoff.u);
+    printf("  debug..........: 0x%04lX\r\n", motorParams.debug.u);
     printf("-----------------------------------------------\r\n");
     printf("  pulse_ticks....: %lu\r\n", (uint32_t)PULSE_TICKS);
     printf("  min_period.....: %lu ticks (%.1f mm/s)\r\n",
@@ -176,6 +181,7 @@ void Stepper_SetParam(const char *name, float value)
     else if (strcmp(name, "dirinv")   == 0) motorParams.dirinv.u   = (uint32_t)value;
     else if (strcmp(name, "homespd")  == 0) motorParams.homespd.f  = value;
     else if (strcmp(name, "homeoff")  == 0) motorParams.homeoff.u  = (uint32_t)value;
+    else if (strcmp(name, "debug")   == 0) motorParams.debug.u    = (uint32_t)value;
     else { printf("unknown param: %s\r\n", name); return; }
     printf("%s = %.3f\r\n", name, value);
 }

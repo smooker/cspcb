@@ -96,6 +96,7 @@ extern volatile uint8_t  posHomed;
 volatile uint8_t diagMode = 0;
 volatile uint8_t buttonsEn = 0;   /* 0 = ignore button EXTI events — starts OFF, enabled after boot OK */
 volatile uint8_t endstopsEn = 1;  /* 0 = ignore endstop EXTI events */
+volatile int8_t  esBlocked  = 0;  /* -1 = ES_L hit (block CCW), +1 = ES_R hit (block CW), 0 = clear */
 volatile uint32_t buzzTick = 0;
 volatile uint8_t  buzzActive = 0;
 
@@ -786,19 +787,19 @@ void ProcessLine(void)
     }
     else if (sscanf((char *)lineBuf, "move %f", &fval) == 1)
     {
-        Stepper_Move(fval);
+        esBlocked = 0; Stepper_Move(fval);
     }
     else if (sscanf((char *)lineBuf, "movel %f", &fval) == 1)
     {
-        Stepper_Move(-fval);
+        esBlocked = 0; Stepper_Move(-fval);
     }
     else if (sscanf((char *)lineBuf, "mover %f", &fval) == 1)
     {
-        Stepper_Move(fval);
+        esBlocked = 0; Stepper_Move(fval);
     }
     else if (sscanf((char *)lineBuf, "steps %d", &ival) == 1)
     {
-        Stepper_MoveSteps(ival);
+        esBlocked = 0; Stepper_MoveSteps(ival);
     }
     else if (sscanf((char *)lineBuf, "%s", cmd) == 1)
     {
@@ -1026,6 +1027,16 @@ int main(void)
         }
     }
 
+    /* Print prompt when motor stops (jog, step, CDC move) */
+    {
+        static uint8_t wasBusy = 0;
+        uint8_t busy = Stepper_IsBusy();
+        if (wasBusy && !busy) {
+            PrintPrompt();
+        }
+        wasBusy = busy;
+    }
+
     /* Non-blocking morse */
     MorseUpdate();
 
@@ -1044,7 +1055,7 @@ int main(void)
             break;
         case 2: { /* check all inputs — active LOW = stuck */
             uint8_t stuck = 0;
-            if (!HAL_GPIO_ReadPin(ES_L_GPIO_Port, ES_L_Pin))         { stuck = 1; printf("STUCK: ES_L\r\n"); }
+            /* ES_L skipped — motor may be parked on home switch */
             if (!HAL_GPIO_ReadPin(ES_R_GPIO_Port, ES_R_Pin))         { stuck = 1; printf("STUCK: ES_R\r\n"); }
             if (!HAL_GPIO_ReadPin(BUTT_JOGL_GPIO_Port, BUTT_JOGL_Pin)) { stuck = 1; printf("STUCK: JOGL\r\n"); }
             if (!HAL_GPIO_ReadPin(BUTT_JOGR_GPIO_Port, BUTT_JOGR_Pin)) { stuck = 1; printf("STUCK: JOGR\r\n"); }
@@ -1378,27 +1389,29 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     /* ---- Jog buttons: both edges, debounce ---- */
     case BUTT_JOGL_Pin:
         if (!buttonsEn) break;
-        if (now - lastTick_jogL >= DEBOUNCE_MS) {
+        if (HAL_GPIO_ReadPin(BUTT_JOGL_GPIO_Port, BUTT_JOGL_Pin)) {
+            /* release — immediate, no debounce, stop NOW */
+            Stepper_Stop();
+            evtFlags |= EVT_JOGL_UP;
+        } else if (now - lastTick_jogL >= DEBOUNCE_MS) {
+            /* press — debounced */
             lastTick_jogL = now;
-            if (!HAL_GPIO_ReadPin(BUTT_JOGL_GPIO_Port, BUTT_JOGL_Pin)) {
-                jogPressTickL = now;
-                evtFlags |= EVT_JOGL_DN;
-            } else {
-                evtFlags |= EVT_JOGL_UP;
-            }
+            jogPressTickL = now;
+            evtFlags |= EVT_JOGL_DN;
         }
         break;
 
     case BUTT_JOGR_Pin:
         if (!buttonsEn) break;
-        if (now - lastTick_jogR >= DEBOUNCE_MS) {
+        if (HAL_GPIO_ReadPin(BUTT_JOGR_GPIO_Port, BUTT_JOGR_Pin)) {
+            /* release — immediate, no debounce, stop NOW */
+            Stepper_Stop();
+            evtFlags |= EVT_JOGR_UP;
+        } else if (now - lastTick_jogR >= DEBOUNCE_MS) {
+            /* press — debounced */
             lastTick_jogR = now;
-            if (!HAL_GPIO_ReadPin(BUTT_JOGR_GPIO_Port, BUTT_JOGR_Pin)) {
-                jogPressTickR = now;
-                evtFlags |= EVT_JOGR_DN;
-            } else {
-                evtFlags |= EVT_JOGR_UP;
-            }
+            jogPressTickR = now;
+            evtFlags |= EVT_JOGR_DN;
         }
         break;
 
@@ -1429,32 +1442,39 @@ void RunHome(void)
     float savedMax = motorParams.mmpsmax.f;
     float savedMin = motorParams.mmpsmin.f;
 
-    /* Phase 1: approach ES_L at homespd (CCW), polling with debounce */
-    printf("home: approach ES_L @ %.1f mm/s CCW\r\n", motorParams.homespd.f);
     endstopsEn = 0;  /* ignore EXTI — we poll manually to avoid EMI false triggers */
     buttonsEn = 0;
-    motorParams.mmpsmax.f = motorParams.homespd.f;
-    Stepper_Move(-9999.0f);  /* long CCW move */
-    while (Stepper_IsBusy()) {
-        /* debounced poll: ES_L must read LOW 10 times in a row (50ms) */
-        uint8_t lowCount = 0;
-        while (lowCount < 10 && Stepper_IsBusy()) {
-            if (HAL_GPIO_ReadPin(ES_L_GPIO_Port, ES_L_Pin) == GPIO_PIN_RESET)
-                lowCount++;
-            else
-                lowCount = 0;
-            HAL_Delay(5);
-        }
-        if (lowCount >= 10) {
-            Stepper_Stop();
-            while (Stepper_IsBusy()) { HAL_Delay(10); }
-            break;
-        }
-    }
-    printf("home: ES_L confirmed, settling...\r\n");
+    uint32_t parkSteps = motorParams.homeoff.u;
 
-    /* Phase 2: settle — wait for vibrations */
-    HAL_Delay(500);
+    /* Check if already on ES_L */
+    if (HAL_GPIO_ReadPin(ES_L_GPIO_Port, ES_L_Pin) == GPIO_PIN_RESET) {
+        printf("home: already on ES_L, backoff\r\n");
+    } else {
+        /* Phase 1: approach ES_L at homespd (CCW), polling with debounce */
+        printf("home: approach ES_L @ %.1f mm/s CCW\r\n", motorParams.homespd.f);
+        motorParams.mmpsmax.f = motorParams.homespd.f;
+        Stepper_Move(-9999.0f);  /* long CCW move */
+        while (Stepper_IsBusy()) {
+            /* debounced poll: ES_L must read LOW 10 times in a row (50ms) */
+            uint8_t lowCount = 0;
+            while (lowCount < 10 && Stepper_IsBusy()) {
+                if (HAL_GPIO_ReadPin(ES_L_GPIO_Port, ES_L_Pin) == GPIO_PIN_RESET)
+                    lowCount++;
+                else
+                    lowCount = 0;
+                HAL_Delay(5);
+            }
+            if (lowCount >= 10) {
+                Stepper_Stop();
+                while (Stepper_IsBusy()) { HAL_Delay(10); }
+                break;
+            }
+        }
+        printf("home: ES_L confirmed, settling...\r\n");
+
+        /* Phase 2: settle — wait for vibrations */
+        HAL_Delay(500);
+    }
 
     /* Phase 3: backoff at homespd/10 (CW) until ES_L releases (debounced) */
     float backoffSpd = motorParams.homespd.f / 10.0f;
@@ -1480,11 +1500,11 @@ void RunHome(void)
             break;
         }
     }
-    printf("home: ES_L released, +%lu steps CW\r\n", motorParams.homeoff.u);
+    printf("home: ES_L released, +%lu steps CW\r\n", parkSteps);
 
-    /* Phase 4: move homeoff steps CW away from switch */
+    /* Phase 4: move parkSteps CW away from switch */
     HAL_Delay(200);
-    Stepper_MoveSteps((int32_t)motorParams.homeoff.u);
+    Stepper_MoveSteps((int32_t)parkSteps);
     while (Stepper_IsBusy()) {
         HAL_GPIO_TogglePin(LED_USER_GPIO_Port, LED_USER_Pin);
         HAL_Delay(50);
@@ -1498,6 +1518,8 @@ void RunHome(void)
     motorParams.mmpsmax.f = savedMax;
     motorParams.mmpsmin.f = savedMin;
     endstopsEn = 1;
+    buttonsEn = 1;
+    esBlocked = 0;
     printf("home: done\r\n");
 }
 
@@ -1535,46 +1557,52 @@ void ProcessEvents(void)
 
     /* ---- Endstops ---- */
     if (flags & EVT_ES_L) {
-        printf("ES_L hit\r\n"); PrintPrompt();
+        if (motorParams.debug.u & 1) { printf("ES_L hit\r\n"); }
         jogStateL = JOG_IDLE;
         jogStateR = JOG_IDLE;
+        esBlocked = -1;  /* block CCW, allow CW */
     }
     if (flags & EVT_ES_R) {
-        printf("ES_R hit\r\n"); PrintPrompt();
+        if (motorParams.debug.u & 1) { printf("ES_R hit\r\n"); }
         jogStateL = JOG_IDLE;
         jogStateR = JOG_IDLE;
+        esBlocked = 1;   /* block CW, allow CCW */
     }
 
-    /* ---- Jog Left ---- */
+    /* ---- Jog Left (CCW) ---- */
     if (flags & EVT_JOGL_DN) {
         if (diagMode) { printf("JOGL_DN\r\n"); PrintPrompt(); }
+        else if (esBlocked == -1) { if (motorParams.debug.u & 1) { printf("blocked: ES_L\r\n"); } }
         else {
             jogStateL = JOG_PRESSED;
             Stepper_Jog(-1.0f);   /* immediate short jog */
+            esBlocked = 0;        /* moving away from ES_R clears block */
         }
     }
     if (flags & EVT_JOGL_UP) {
         if (diagMode) { printf("JOGL_UP\r\n"); PrintPrompt(); }
         else if (jogStateL == JOG_CONT) {
             Stepper_Stop();
-            printf("jog L stop\r\n"); PrintPrompt();
+            if (motorParams.debug.u & 1) { printf("jog L stop\r\n"); }
         }
         jogStateL = JOG_IDLE;
     }
 
-    /* ---- Jog Right ---- */
+    /* ---- Jog Right (CW) ---- */
     if (flags & EVT_JOGR_DN) {
         if (diagMode) { printf("JOGR_DN\r\n"); PrintPrompt(); }
+        else if (esBlocked == 1) { if (motorParams.debug.u & 1) { printf("blocked: ES_R\r\n"); } }
         else {
             jogStateR = JOG_PRESSED;
             Stepper_Jog(1.0f);    /* immediate short jog */
+            esBlocked = 0;        /* moving away from ES_L clears block */
         }
     }
     if (flags & EVT_JOGR_UP) {
         if (diagMode) { printf("JOGR_UP\r\n"); PrintPrompt(); }
         else if (jogStateR == JOG_CONT) {
             Stepper_Stop();
-            printf("jog R stop\r\n"); PrintPrompt();
+            if (motorParams.debug.u & 1) { printf("jog R stop\r\n"); }
         }
         jogStateR = JOG_IDLE;
     }
@@ -1583,13 +1611,13 @@ void ProcessEvents(void)
     if (!diagMode) {
         if (jogStateL == JOG_PRESSED && !Stepper_IsBusy()
             && (now - jogPressTickL >= JOG_HOLD_MS)) {
-            jogStateL = JOG_CONT;
-            Stepper_RunContinuous(-1);
+            if (esBlocked == -1) { jogStateL = JOG_IDLE; }
+            else { jogStateL = JOG_CONT; Stepper_RunContinuous(-1); }
         }
         if (jogStateR == JOG_PRESSED && !Stepper_IsBusy()
             && (now - jogPressTickR >= JOG_HOLD_MS)) {
-            jogStateR = JOG_CONT;
-            Stepper_RunContinuous(1);
+            if (esBlocked == 1) { jogStateR = JOG_IDLE; }
+            else { jogStateR = JOG_CONT; Stepper_RunContinuous(1); }
         }
     }
 

@@ -49,6 +49,7 @@ typedef struct
     union { float f; uint32_t u; } dirinv;   /* 0=normal, 1=invert DIR */
     union { float f; uint32_t u; } homespd;  /* homing approach speed mm/s */
     union { float f; uint32_t u; } homeoff;  /* homing offset from switch in steps */
+    union { float f; uint32_t u; } debug;    /* bit0: verbose button msgs */
 } params_t;
 
 extern union {
