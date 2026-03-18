@@ -11,7 +11,8 @@
 7. RX buffer flush (discards any minicom init strings)
 8. Buzzer plays **Z** (morse: `--..`) — non-blocking, you can type during it
 9. **3 second delay** — buttons disabled, endstops active
-10. **Input self-test** — reads all 6 inputs (4 buttons + 2 endstops)
+10. **Input self-test** — reads 5 inputs (4 buttons + ES_R)
+    - ES_L is excluded — motor may be parked on home switch after homing.
     - All clear → buzzer plays **OK** (morse: `--- -.-`) → buttons enabled → system ready
     - Any input stuck LOW → prints which input is stuck (e.g. `STUCK: ES_L`) → buzzer plays **CQ CQ CQ DE LZ1CCM** → 2s pause → re-checks → repeats until fault cleared
 
@@ -46,6 +47,8 @@ Connect via serial terminal (minicom, screen, etc.) at any baud rate (USB CDC).
 3. **Backoff** at `homespd/10` mm/s CW — debounced polling (10×5ms HIGH)
 4. **Park** `homeoff` steps CW from switch edge (default 400)
 
+If already on ES_L at start: skips approach and settle, goes directly to backoff + park.
+
 EXTI endstops are disabled during homing — uses GPIO polling with debounce
 to avoid EMI false triggers.
 
@@ -63,6 +66,7 @@ to avoid EMI false triggers.
 | `set dirinv <0/1>` | Invert DIR pin — compensates for optocoupled driver polarity |
 | `set homespd <f>` | Homing approach speed (mm/s) — backoff is 1/10 of this |
 | `set homeoff <n>` | Homing offset from switch (steps) — park distance after backoff |
+| `set debug <n>` | Debug flags (bitfield) — bit0: verbose button messages |
 | `params` | Show all current parameters |
 | `save` | Save parameters to EEPROM (persists across resets) |
 
@@ -106,6 +110,8 @@ Buttons start **disabled** at boot — enabled after input self-test passes (mor
 | STEP L | PB0 | Move CCW by `stepmm` with ramps | — |
 | STEP R | PB1 | Move CW by `stepmm` with ramps | — |
 
+Jog button release triggers immediate stop (no debounce) with Stepper_Stop() called directly in ISR for minimum latency.
+
 ## Endstops
 
 | Endstop | Pin | Behavior |
@@ -116,6 +122,16 @@ Buttons start **disabled** at boot — enabled after input self-test passes (mor
 Endstops have **no software debounce** in normal mode (safety first).
 In `diag_inputs` mode, endstops have 30ms debounce and only print — no stop.
 During `home`, EXTI endstops are disabled — GPIO polling with debounce is used instead.
+
+## Endstop Direction Blocking
+
+After an endstop hit, movement in that direction is blocked:
+
+- **ES_L hit** → CCW (left) jog blocked, CW (right) jog allowed
+- **ES_R hit** → CW (right) jog blocked, CCW (left) jog allowed
+
+Block clears automatically when jogging in the opposite direction, or on any CDC move command.
+Step buttons remain blocked in both directions after endstop hit.
 
 ## Buzzer
 
@@ -142,12 +158,26 @@ Trapezoidal/triangular velocity profile with configurable acceleration and decel
 - Long moves: **trapezoid** profile — accel → constant speed → decel
 - Asymmetric ramps supported: set `dvdtdecc` different from `dvdtacc`
 
+## Position Tracking
+
+After a successful `home` command, the prompt shows absolute position in mm:
+```
+   0.00 >
+```
+
+Before homing, position is unknown:
+```
+XXXX.XX >
+```
+
+Position updates automatically when the motor stops (from any source: jog, step, CDC command, endstop).
+
 ## EEPROM
 
 Parameters persist across power cycles. Stored in internal flash (sectors 6 & 7)
 with wear-leveling. Use `save` command after changing parameters.
 
-9 parameters stored: mmpsmax, mmpsmin, dvdtacc, dvdtdecc, jogmm, stepmm, spmm, dirinv, homespd.
+11 parameters stored: mmpsmax, mmpsmin, dvdtacc, dvdtdecc, jogmm, stepmm, spmm, dirinv, homespd, homeoff, debug.
 
 ## Safety Notes
 
@@ -157,3 +187,5 @@ with wear-leveling. Use `save` command after changing parameters.
 - Homing uses debounced GPIO polling (not EXTI) to avoid EMI false triggers
 - EMI from solar inverters / stepper drivers can cause false button/endstop triggers without hardware filtering (external pull-ups + caps recommended on PCB)
 - Buttons disabled at boot until input self-test passes
+- Jog release stops motor immediately (ISR-level, no debounce delay)
+- Endstop direction blocking prevents re-entering the same endstop

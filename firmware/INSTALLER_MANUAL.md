@@ -55,7 +55,7 @@ save
 
 At spmm=400, 400 steps = 1mm.
 
-### 4. Set Working Speeds
+### 5. Set Working Speeds
 
 | Parameter | Description | Recommended Start |
 |-----------|-------------|-------------------|
@@ -76,14 +76,14 @@ set stepmm 1
 save
 ```
 
-### 5. Verify Endstops
+### 6. Verify Endstops
 
 1. Run `di` (diag_inputs mode)
 2. Manually press each endstop switch
 3. Confirm `ES_L hit` and `ES_R hit` appear correctly
 4. Run `di` again to exit diag mode
 
-### 6. Test Homing
+### 7. Test Homing
 
 1. Position the motor away from both endstops
 2. Run `home`
@@ -92,13 +92,13 @@ save
 home: approach ES_L @ 1.0 mm/s CCW
 home: ES_L confirmed, settling...
 home: backoff @ 0.10 mm/s CW
-home: ES_L released, +1mm CW
+home: ES_L released, +400 steps CW
 home: done
 ```
 
 If you see `home: ABORT` — ES_L was not physically pressed (EMI false trigger or wrong endstop wired).
 
-### 7. Verify with Combo
+### 8. Verify with Combo
 
 Run `combo` to test all 4 ramp profiles:
 - Triangle left (1mm)
@@ -120,6 +120,7 @@ Run `combo` to test all 4 ramp profiles:
 | 8 | dirinv | uint32 | 0 | 0=normal, 1=invert |
 | 9 | homespd | float | 1.0 | mm/s |
 | 10 | homeoff | uint32 | 400 | steps |
+| 11 | debug | uint32 | 0 | bitfield (bit0: verbose button msgs) |
 
 All stored as raw `uint32_t` (floats via union bit-cast). Dual-page wear-leveling
 in flash sectors 6 & 7 (128 KB each).
@@ -187,9 +188,12 @@ into long unshielded wires. Symptoms:
 
 **Software mitigations** (already implemented):
 - Boot input self-test with stuck detection
+- ES_L excluded from boot self-test (motor may be parked on home switch)
 - `buttons off` / `endstops off` commands
 - Homing uses debounced GPIO polling (not EXTI)
 - 30ms debounce on buttons in normal mode
+- Endstop direction blocking (jog blocked toward triggered endstop)
+- Jog release: immediate ISR-level stop, no debounce
 
 ## Troubleshooting
 

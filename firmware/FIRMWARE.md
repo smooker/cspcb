@@ -6,11 +6,14 @@ trapezoidal velocity profiling, and EEPROM emulation in internal flash.
 ## Motor Control (stepper.c)
 
 State machine: IDLE → ACCEL → CONST → DECEL → IDLE
+Asymmetric ramps: `dvdtacc` and `dvdtdecc` can differ for independent accel/decel profiles.
 
 - PWM: TIM2 Channel 3 @ 96 MHz, pulse width ~50 µs (5000 ticks)
 - Ramp tables: precomputed via sqrt(v² + 2·a·s) using hardware VSQRT
 - ISR: updates TIM2 ARR (period) each step for smooth velocity profile
 - Direction: PB14 (DIR pin), set before first pulse
+- Direction inversion: `dirinv` param XORs DIR output for optocoupled drivers
+- Position tracking: `posSteps` counter in ISR, absolute position after homing
 
 ### Parameters (saved to EEPROM)
 
@@ -23,6 +26,10 @@ State machine: IDLE → ACCEL → CONST → DECEL → IDLE
 | jogmm    | 1.0     | mm      | Jog distance             |
 | stepmm   | 1.0     | mm      | Step button distance     |
 | spmm     | 80      | steps/mm| Steps per millimeter     |
+| dirinv   | 0       | 0/1     | DIR pin inversion          |
+| homespd  | 1.0     | mm/s    | Homing approach speed      |
+| homeoff  | 400     | steps   | Homing park offset         |
+| debug    | 0       | bitfield| bit0: verbose button msgs  |
 
 ## USB CDC Commands
 
@@ -42,6 +49,12 @@ State machine: IDLE → ACCEL → CONST → DECEL → IDLE
 | reset                | Software reset (NVIC_SystemReset)  |
 | combo                | Run 4 test moves (2 tri + 2 trap) |
 | help                 | Print command list                 |
+| home                 | Homing: find ES_L, backoff, park     |
+| morse \<text\>       | Play morse code (non-blocking)       |
+| buttons on/off       | Enable/disable button EXTI           |
+| endstops on/off      | Enable/disable endstop EXTI          |
+| diag_inputs (di)     | Toggle input diagnostics mode        |
+| diag_outputs (do)    | PULSE+DIR test (password: motorola)  |
 
 Terminal escape sequences supported (arrow keys, F1-F4).
 
@@ -72,7 +85,7 @@ Dual-page wear-leveling using flash sectors 6 & 7 (128 KB each).
 - Page states: ERASED (0xFFFFFFFF) → RECEIVE (0xEEEEEEEE) → VALID (0xAAAAAAAA)
 - Page-swap compaction when active page fills
 - Power-loss safe: unfinished records ignored on recovery
-- Virtual addresses 1-7 map to the 7 motor parameters
+- Virtual addresses 1-11 map to the 11 motor parameters
 
 ## Clock Configuration
 
